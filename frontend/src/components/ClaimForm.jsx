@@ -1,11 +1,44 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CheckCircle2, UploadCloud } from 'lucide-react'
+import { CheckCircle2, UploadCloud, Loader2 } from 'lucide-react'
+import axiosInstance from '../api/axiosInstance'
+import ClaimProcessingOverlay from './ClaimProcessingOverlay'
 
-function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
-  const handleFile = (e) => {
+const uploadToCloudinary = async (file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('upload_preset', 'seedha_claim_upload')
+  formData.append('cloud_name', 'dmzzq2219')
+  const response = await fetch(
+    'https://api.cloudinary.com/v1_1/dmzzq2219/image/upload',
+    { method: 'POST', body: formData }
+  )
+  const data = await response.json()
+  if (!data.secure_url) throw new Error('Upload failed')
+  return data.secure_url
+}
+
+function FileUploadBox({ id, label, required, hint, fileData, onChange, isPrimary }) {
+  const [isUploading, setIsUploading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleFile = async (e) => {
     if (e.target.files && e.target.files[0]) {
-      onChange(e.target.files[0])
+      const file = e.target.files[0]
+      if (file.size > 10 * 1024 * 1024) {
+        setError('Max size 10MB')
+        return
+      }
+      setError('')
+      setIsUploading(true)
+      try {
+        const url = await uploadToCloudinary(file)
+        onChange({ name: file.name, secure_url: url }, isPrimary)
+      } catch (err) {
+        setError('File upload failed, please try again')
+      } finally {
+        setIsUploading(false)
+      }
     }
   }
 
@@ -25,15 +58,19 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
         />
         <label 
           htmlFor={id} 
-          className={`flex items-center justify-between w-full px-4 py-3.5 rounded-xl border ${fileData ? 'border-[#10B981] bg-[#10B981]/5' : 'border-[#D1D9E0] bg-[#F8FAFC]'} hover:border-[#4F46E5] transition-colors cursor-pointer group-focus-within:border-[#4F46E5]`}
+          className={`flex items-center justify-between w-full px-4 py-3.5 rounded-xl border ${fileData ? 'border-[#10B981] bg-[#10B981]/5' : error ? 'border-red-300 bg-red-50' : 'border-[#D1D9E0] bg-[#F8FAFC]'} hover:border-[#4F46E5] transition-colors cursor-pointer group-focus-within:border-[#4F46E5]`}
         >
           <div className="flex items-center gap-3 overflow-hidden pr-2">
-            <UploadCloud className={`w-5 h-5 shrink-0 transition-colors ${fileData ? 'text-[#10B981]' : 'text-[#9CA3AF] group-hover:text-[#4F46E5]'}`} />
-            <span className={`text-sm tracking-wide truncate font-semibold transition-colors ${fileData ? 'text-[#111827]' : 'text-[#9CA3AF] group-hover:text-[#6B7280]'}`}>
-               {fileData ? fileData.name : 'Choose file (JPG, PNG, PDF)'}
+            {isUploading ? (
+               <Loader2 className="w-5 h-5 shrink-0 text-[#4F46E5] animate-spin" />
+            ) : (
+               <UploadCloud className={`w-5 h-5 shrink-0 transition-colors ${fileData ? 'text-[#10B981]' : error ? 'text-red-400' : 'text-[#9CA3AF] group-hover:text-[#4F46E5]'}`} />
+            )}
+            <span className={`text-sm tracking-wide truncate font-semibold transition-colors ${fileData ? 'text-[#111827]' : error ? 'text-red-500' : 'text-[#9CA3AF] group-hover:text-[#6B7280]'}`}>
+               {isUploading ? 'Uploading...' : fileData ? fileData.name : error ? error : 'Choose file (JPG, PNG, PDF)'}
             </span>
           </div>
-          {fileData && <span className="text-xs font-bold text-[#10B981] flex items-center gap-1 shrink-0"><CheckCircle2 className="w-4 h-4"/> Uploaded</span>}
+          {fileData && !isUploading && <span className="text-xs font-bold text-[#10B981] flex items-center gap-1 shrink-0"><CheckCircle2 className="w-4 h-4"/> Uploaded</span>}
         </label>
       </div>
     </div>
@@ -42,17 +79,11 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
 
 export default function ClaimForm({ onComplete }) {
   const [formData, setFormData] = useState({
-    // Section 1
     fullName: '', email: '', phone: '', policyNumber: '',
-    // Section 2
     patientName: '', relationship: '', otherRelationship: '', gender: '', dob: '',
-    // Section 3
     hospitalName: '', city: '', admissionDate: '', dischargeDate: '',
-    // Section 4
     treatmentType: '', diagnosis: '', doctorName: '', reason: '',
-    // Section 5
     billAmount: '', claimedAmount: '', paymentMode: '',
-    // Declaration
     declaration: false
   })
 
@@ -65,9 +96,11 @@ export default function ClaimForm({ onComplete }) {
     idProof: null,
   })
 
-  const [submitted, setSubmitted] = useState(false)
+  const [documentUrl, setDocumentUrl] = useState('')
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [apiResponse, setApiResponse] = useState(null)
+  const [submitError, setSubmitError] = useState('')
 
-  // Pre-fill user data conceptually
   useEffect(() => {
     const userUser = JSON.parse(localStorage.getItem("user"))
     if (userUser) {
@@ -83,36 +116,65 @@ export default function ClaimForm({ onComplete }) {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  const handleFileChange = (field, file) => {
-    setFiles(prev => ({ ...prev, [field]: file }))
+  const handleFileChange = (field, fileObj, isPrimary) => {
+    setFiles(prev => ({ ...prev, [field]: fileObj }))
+    if (isPrimary && fileObj?.secure_url) {
+      setDocumentUrl(fileObj.secure_url)
+    }
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    setSubmitted(true)
-    setTimeout(() => {
-        if (onComplete) onComplete()
-    }, 4000)
+    setSubmitError('')
+
+    if (!documentUrl) {
+      setSubmitError('Please upload a document before submitting')
+      return
+    }
+
+    const payload = {
+      claim_type: 'Health Insurance',
+      claim_amount: parseFloat(formData.claimedAmount) || 0,
+      document_url: documentUrl,
+      description: formData.reason || formData.diagnosis || 'Health insurance claim',
+    }
+
+    setIsProcessing(true)
+    setApiResponse(null)
+
+    try {
+      const [response] = await Promise.all([
+        axiosInstance.post('/api/v1/claims/submit', payload),
+        new Promise(resolve => setTimeout(resolve, 3500))
+      ])
+      setApiResponse(response.data.data)
+    } catch (err) {
+      setApiResponse({ claim_status: 'error', status_reason: err.response?.data?.message || 'Submission failed' })
+    }
   }
 
-  if (submitted) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center p-4">
-        <motion.div
-           initial={{ opacity: 0, scale: 0.95 }}
-           animate={{ opacity: 1, scale: 1 }}
-           className="w-full max-w-lg bg-white rounded-2xl border border-[#D1D9E0] shadow-[0_8px_20px_rgba(0,0,0,0.06)] p-10 text-center flex flex-col items-center"
-        >
-          <div className="w-20 h-20 bg-[#10B981]/10 rounded-full flex items-center justify-center mb-6 shadow-[0_2px_10px_rgba(16,185,129,0.2)] border border-[#10B981]/20">
-            <CheckCircle2 className="w-10 h-10 text-[#10B981]" strokeWidth={2.5} />
-          </div>
-          <h2 className="text-2xl font-black text-[#111827] tracking-tight mb-2">Claim Submitted Successfully</h2>
-          <p className="text-[#6B7280] font-semibold max-w-sm mx-auto leading-relaxed">
-            Your claim application and documents have been securely transmitted to our processing center.
-          </p>
-        </motion.div>
-      </div>
-    )
+  const handleReset = () => {
+    setFormData({
+      fullName: '', email: '', phone: '', policyNumber: '',
+      patientName: '', relationship: '', otherRelationship: '', gender: '', dob: '',
+      hospitalName: '', city: '', admissionDate: '', dischargeDate: '',
+      treatmentType: '', diagnosis: '', doctorName: '', reason: '',
+      billAmount: '', claimedAmount: '', paymentMode: '',
+      declaration: false
+    })
+    setFiles({ medicalBills: null, dischargeSummary: null, prescription: null, fir: null, labReports: null, idProof: null })
+    setDocumentUrl('')
+    setIsProcessing(false)
+    setApiResponse(null)
+    setSubmitError('')
+    const userUser = JSON.parse(localStorage.getItem("user"))
+    if (userUser) {
+      setFormData(prev => ({ ...prev, fullName: userUser.name || '', email: userUser.email || '' }))
+    }
+  }
+
+  if (isProcessing) {
+    return <ClaimProcessingOverlay apiResponse={apiResponse} onReset={handleReset} />
   }
 
   const InputField = ({ label, type="text", field, placeholder, required=true, prefix }) => (
@@ -238,25 +300,23 @@ export default function ClaimForm({ onComplete }) {
                </h3>
                
                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                 {/* Standard Requirements */}
-                 <FileUploadBox id="d1" label="Medical Bills" required={true} fileData={files.medicalBills} onChange={f => handleFileChange('medicalBills', f)} />
-                 <FileUploadBox id="d2" label="Discharge Summary" required={true} fileData={files.dischargeSummary} onChange={f => handleFileChange('dischargeSummary', f)} />
-                 <FileUploadBox id="d3" label="Prescription" required={false} hint="Optional" fileData={files.prescription} onChange={f => handleFileChange('prescription', f)} />
-                 <FileUploadBox id="d6" label="ID Proof" required={false} hint="Optional" fileData={files.idProof} onChange={f => handleFileChange('idProof', f)} />
+                 <FileUploadBox id="d1" label="Medical Bills" required={true} fileData={files.medicalBills} isPrimary={true} onChange={(f, isPrimary) => handleFileChange('medicalBills', f, isPrimary)} />
+                 <FileUploadBox id="d2" label="Discharge Summary" required={true} fileData={files.dischargeSummary} isPrimary={false} onChange={(f, isPrimary) => handleFileChange('dischargeSummary', f, isPrimary)} />
+                 <FileUploadBox id="d3" label="Prescription" required={false} hint="Optional" fileData={files.prescription} isPrimary={false} onChange={(f, isPrimary) => handleFileChange('prescription', f, isPrimary)} />
+                 <FileUploadBox id="d6" label="ID Proof" required={false} hint="Optional" fileData={files.idProof} isPrimary={false} onChange={(f, isPrimary) => handleFileChange('idProof', f, isPrimary)} />
 
-                 {/* Conditional Context Nodes */}
                  <AnimatePresence>
                    {formData.treatmentType === "Accident" && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2">
                         <div className="bg-[#FEF2F2] border border-[#FCA5A5] rounded-xl p-6 shadow-sm">
-                           <FileUploadBox id="d4" label="Upload FIR" hint="FIR is required for accident-related claims" required={true} fileData={files.fir} onChange={f => handleFileChange('fir', f)} />
+                           <FileUploadBox id="d4" label="Upload FIR" hint="FIR is required for accident-related claims" required={true} fileData={files.fir} isPrimary={false} onChange={(f, isPrimary) => handleFileChange('fir', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
                    {formData.treatmentType === "Disease" && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2">
                         <div className="bg-[#F0FDF4] border border-[#86EFAC] rounded-xl p-6 shadow-sm">
-                           <FileUploadBox id="d5" label="Upload Lab Reports" hint="Lab reports required for disease verification" required={true} fileData={files.labReports} onChange={f => handleFileChange('labReports', f)} />
+                           <FileUploadBox id="d5" label="Upload Lab Reports" hint="Lab reports required for disease verification" required={true} fileData={files.labReports} isPrimary={false} onChange={(f, isPrimary) => handleFileChange('labReports', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
@@ -276,6 +336,12 @@ export default function ClaimForm({ onComplete }) {
                  </span>
                </label>
              </div>
+
+             {submitError && (
+               <div className="bg-[#FEF2F2] border border-[#FCA5A5] px-4 py-3 rounded-xl">
+                 <span className="text-sm font-semibold text-[#DC2626]">{submitError}</span>
+               </div>
+             )}
 
              <div className="pt-6 border-t border-[#D1D9E0]/50 flex justify-end">
                <motion.button

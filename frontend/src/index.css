@@ -41,3 +41,20 @@ body {
 ::-webkit-scrollbar-track { background: #FDF8F5; }
 ::-webkit-scrollbar-thumb { background: #D6D3D1; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #A8A29E; }
+
+/* ── Claim Processing Overlay Animations ── */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.15); }
+  50% { box-shadow: 0 0 20px 8px rgba(251, 191, 36, 0.2); }
+}
+.pulse-glow-badge {
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes green-shimmer {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.15); }
+  50% { box-shadow: 0 0 24px 10px rgba(16, 185, 129, 0.2); }
+}
+.green-shimmer-badge {
+  animation: green-shimmer 2.5s ease-in-out infinite;
+}

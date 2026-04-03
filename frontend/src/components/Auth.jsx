@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Eye, EyeOff, Loader2, CheckCircle2, ArrowLeft, UserCircle2 } from 'lucide-react'
+import axiosInstance from '../api/axiosInstance'
 
 // Mock Google Icon SVG
 function GoogleIcon(props) {
@@ -22,12 +23,17 @@ function GoogleAccountModal({ isOpen, onClose, onSuccess }) {
     { name: 'Demo User', email: 'demo@gmail.com', initial: 'D', color: 'bg-blue-600' }
   ]
 
-  const handleSelect = (acc) => {
+  const handleSelect = async (acc) => {
     setSelecting(acc.email)
-    setTimeout(() => {
-      onSuccess({ name: acc.name, email: acc.email })
+    try {
+      const response = await axiosInstance.post('/api/v1/auth/google', {})
+      const { token, user } = response.data.data
+      localStorage.setItem('accessToken', token)
+      localStorage.setItem('user', JSON.stringify({ name: user.full_name || acc.name, email: user.email || acc.email }))
+      onSuccess({ name: user.full_name || acc.name, email: user.email || acc.email })
+    } catch (err) {
       setSelecting(null)
-    }, 1000)
+    }
   }
 
   return (
@@ -103,6 +109,7 @@ export default function Auth({ onBack, onSuccess }) {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState({ email: '', password: '' })
+  const [apiError, setApiError] = useState('')
   
   const [isLoading, setIsLoading] = useState(false)
   const [isSuccess, setIsSuccess] = useState(false)
@@ -127,26 +134,35 @@ export default function Auth({ onBack, onSuccess }) {
     return isValid
   }
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault()
     if (!validate()) return
     
     setIsLoading(true)
-    localStorage.setItem("user", JSON.stringify({ name: "Guest User", email: email }))
-    setTimeout(() => {
+    setApiError('')
+
+    try {
+      const response = await axiosInstance.post('/api/v1/auth/google', {})
+      const { token, user } = response.data.data
+      localStorage.setItem('accessToken', token)
+      localStorage.setItem('user', JSON.stringify({ name: user.full_name || 'User', email: user.email || email }))
+      
       setIsLoading(false)
       setIsSuccess(true)
       setTimeout(() => onSuccess && onSuccess(), 1500)
-    }, 1500)
+    } catch (err) {
+      setIsLoading(false)
+      const msg = err.response?.data?.message || 'Login failed. Please check your connection and try again.'
+      setApiError(msg)
+    }
   }
 
   const handleGoogleSuccess = (user) => {
     setShowGoogleModal(false)
-    localStorage.setItem("user", JSON.stringify(user))
     setTimeout(() => {
       setIsSuccess(true)
       setTimeout(() => onSuccess && onSuccess(), 1500)
-    }, 300) // gentle delay to allow modal exit animation
+    }, 300)
   }
 
   return (
@@ -192,7 +208,7 @@ export default function Auth({ onBack, onSuccess }) {
                     type="email"
                     placeholder="Enter your email"
                     value={email}
-                    onChange={(e) => { setEmail(e.target.value); setErrors(prev => ({...prev, email: ''})) }}
+                    onChange={(e) => { setEmail(e.target.value); setErrors(prev => ({...prev, email: ''})); setApiError('') }}
                     className={`w-full px-4 py-3 rounded-xl border bg-[#FFFFFF] outline-none transition-colors text-sm ${
                       errors.email ? 'border-[#EF4444] focus:border-[#EF4444]' : 'border-[#E2E8F0] focus:border-[#2563EB]'
                     } placeholder-[#94A3B8] text-[#0F172A]`}
@@ -206,7 +222,7 @@ export default function Auth({ onBack, onSuccess }) {
                       type={showPassword ? 'text' : 'password'}
                       placeholder="Enter your password"
                       value={password}
-                      onChange={(e) => { setPassword(e.target.value); setErrors(prev => ({...prev, password: ''})) }}
+                      onChange={(e) => { setPassword(e.target.value); setErrors(prev => ({...prev, password: ''})); setApiError('') }}
                       className={`w-full px-4 py-3 rounded-xl border bg-[#FFFFFF] outline-none transition-colors text-sm pr-12 ${
                         errors.password ? 'border-[#EF4444] focus:border-[#EF4444]' : 'border-[#E2E8F0] focus:border-[#2563EB]'
                       } placeholder-[#94A3B8] text-[#0F172A]`}
@@ -221,6 +237,12 @@ export default function Auth({ onBack, onSuccess }) {
                   </div>
                   {errors.password && <span className="text-xs font-semibold text-[#EF4444] ml-1">{errors.password}</span>}
                 </div>
+
+                {apiError && (
+                  <div className="bg-[#FEF2F2] border border-[#FCA5A5] px-4 py-3 rounded-xl">
+                    <span className="text-xs font-semibold text-[#DC2626]">{apiError}</span>
+                  </div>
+                )}
 
                 <motion.button
                   whileHover={{ scale: 1.02 }}

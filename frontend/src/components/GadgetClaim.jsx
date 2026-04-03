@@ -1,17 +1,24 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle2, UploadCloud, Loader2 } from 'lucide-react'
+import axiosInstance from '../api/axiosInstance'
+import ClaimProcessingOverlay from './ClaimProcessingOverlay'
 
-// Simulated Cloudinary Upload (Ready to replace with real fetch later)
 const uploadToCloudinary = async (file) => {
-  if (file.size > 10 * 1024 * 1024) throw new Error("File exceeds 10MB")
-  // Simulate network
-  await new Promise(r => setTimeout(r, 1200))
-  // Return simulated Cloudinary response format
-  return { secure_url: `https://res.cloudinary.com/demo/image/upload/v1/${Date.now()}_${file.name}`, original_name: file.name }
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('upload_preset', 'seedha_claim_upload')
+  formData.append('cloud_name', 'dmzzq2219')
+  const response = await fetch(
+    'https://api.cloudinary.com/v1_1/dmzzq2219/image/upload',
+    { method: 'POST', body: formData }
+  )
+  const data = await response.json()
+  if (!data.secure_url) throw new Error('Upload failed')
+  return data.secure_url
 }
 
-function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
+function FileUploadBox({ id, label, required, hint, fileData, onChange, isPrimary }) {
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState('')
 
@@ -25,10 +32,10 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
       setError('')
       setIsUploading(true)
       try {
-        const response = await uploadToCloudinary(file)
-        onChange(response)
+        const url = await uploadToCloudinary(file)
+        onChange({ name: file.name, secure_url: url }, isPrimary)
       } catch (err) {
-        setError(err.message)
+        setError('File upload failed, please try again')
       } finally {
         setIsUploading(false)
       }
@@ -60,7 +67,7 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
                <UploadCloud className={`w-5 h-5 shrink-0 transition-colors ${fileData ? 'text-[#10B981]' : error ? 'text-red-400' : 'text-[#9CA3AF] group-hover:text-[#4F46E5]'}`} />
             )}
             <span className={`text-sm tracking-wide truncate font-semibold transition-colors ${fileData ? 'text-[#111827]' : error ? 'text-red-500' : 'text-[#9CA3AF] group-hover:text-[#6B7280]'}`}>
-               {isUploading ? 'Uploading...' : fileData ? fileData.original_name : error ? error : 'Choose file (Max 10MB)'}
+               {isUploading ? 'Uploading...' : fileData ? fileData.name : error ? error : 'Choose file (Max 10MB)'}
             </span>
           </div>
           {fileData && !isUploading && <span className="text-xs font-bold text-[#10B981] flex items-center gap-1 shrink-0"><CheckCircle2 className="w-4 h-4"/> Uploaded</span>}
@@ -72,16 +79,11 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
 
 export default function GadgetClaim({ onComplete }) {
   const [formData, setFormData] = useState({
-    // Section 1: User & Policy
     fullName: '', email: '', phone: '',
     policyNumber: '', imei: '',
-    // Section 2: Device
     deviceType: '', brand: '', modelName: '', purchaseDate: '', invoiceNumber: '', deviceValue: '',
-    // Section 3: Incident
     issueType: '', incidentDate: '', incidentDescription: '', incidentLocation: '',
-    // Section 4: Claim
     claimType: '', estimatedLoss: '',
-    // Declaration
     declaration: false
   })
 
@@ -92,9 +94,11 @@ export default function GadgetClaim({ onComplete }) {
     firCopy: null
   })
 
-  const [submitted, setSubmitted] = useState(false)
+  const [documentUrl, setDocumentUrl] = useState('')
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [apiResponse, setApiResponse] = useState(null)
+  const [submitError, setSubmitError] = useState('')
 
-  // Pre-fill user data conceptually
   useEffect(() => {
     const userUser = JSON.parse(localStorage.getItem("user"))
     if (userUser) {
@@ -110,55 +114,63 @@ export default function GadgetClaim({ onComplete }) {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  const handleDocChange = (field, docObj) => {
+  const handleDocChange = (field, docObj, isPrimary) => {
     setDocuments(prev => ({ ...prev, [field]: docObj }))
+    if (isPrimary && docObj?.secure_url) {
+      setDocumentUrl(docObj.secure_url)
+    }
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    // Validation can go here
+    setSubmitError('')
+
+    if (!documentUrl) {
+      setSubmitError('Please upload a document before submitting')
+      return
+    }
 
     const payload = {
-      userDetails: { fullName: formData.fullName, email: formData.email, phone: formData.phone },
-      policyDetails: { policyNumber: formData.policyNumber, imei: formData.imei },
-      deviceDetails: { deviceType: formData.deviceType, brand: formData.brand, modelName: formData.modelName, purchaseDate: formData.purchaseDate, invoiceNumber: formData.invoiceNumber, deviceValue: formData.deviceValue },
-      incidentDetails: { issueType: formData.issueType, incidentDate: formData.incidentDate, incidentDescription: formData.incidentDescription, incidentLocation: formData.incidentLocation },
-      claimDetails: { claimType: formData.claimType, estimatedLoss: formData.estimatedLoss },
-      // Store secure_url only
-      documents: {
-        purchaseInvoice: documents.purchaseInvoice?.secure_url || null,
-        devicePhotos: documents.devicePhotos?.secure_url || null,
-        repairEstimate: documents.repairEstimate?.secure_url || null,
-        firCopy: documents.firCopy?.secure_url || null,
-      }
+      claim_type: 'Gadget Insurance',
+      claim_amount: parseFloat(formData.estimatedLoss || formData.deviceValue) || 0,
+      document_url: documentUrl,
+      description: formData.incidentDescription || 'Gadget insurance claim',
     }
-    
-    console.log("Submitting:", payload)
 
-    setSubmitted(true)
-    setTimeout(() => {
-        if (onComplete) onComplete()
-    }, 4000)
+    setIsProcessing(true)
+    setApiResponse(null)
+
+    try {
+      const [response] = await Promise.all([
+        axiosInstance.post('/api/v1/claims/submit', payload),
+        new Promise(resolve => setTimeout(resolve, 3500))
+      ])
+      setApiResponse(response.data.data)
+    } catch (err) {
+      setApiResponse({ claim_status: 'error', status_reason: err.response?.data?.message || 'Submission failed' })
+    }
   }
 
-  if (submitted) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center p-4">
-        <motion.div
-           initial={{ opacity: 0, scale: 0.95 }}
-           animate={{ opacity: 1, scale: 1 }}
-           className="w-full max-w-lg bg-white rounded-2xl border border-[#D1D9E0] shadow-[0_8px_20px_rgba(0,0,0,0.06)] p-10 text-center flex flex-col items-center"
-        >
-          <div className="w-20 h-20 bg-[#10B981]/10 rounded-full flex items-center justify-center mb-6 shadow-[0_2px_10px_rgba(16,185,129,0.2)] border border-[#10B981]/20">
-            <CheckCircle2 className="w-10 h-10 text-[#10B981]" strokeWidth={2.5} />
-          </div>
-          <h2 className="text-2xl font-black text-[#111827] tracking-tight mb-2">Claim Submitted Successfully</h2>
-          <p className="text-[#6B7280] font-semibold max-w-sm mx-auto leading-relaxed">
-            Your gadget claim and documents have been securely transmitted to our processing center.
-          </p>
-        </motion.div>
-      </div>
-    )
+  const handleReset = () => {
+    setFormData({
+      fullName: '', email: '', phone: '',
+      policyNumber: '', imei: '',
+      deviceType: '', brand: '', modelName: '', purchaseDate: '', invoiceNumber: '', deviceValue: '',
+      issueType: '', incidentDate: '', incidentDescription: '', incidentLocation: '',
+      claimType: '', estimatedLoss: '',
+      declaration: false
+    })
+    setDocuments({ purchaseInvoice: null, devicePhotos: null, repairEstimate: null, firCopy: null })
+    setDocumentUrl('')
+    setIsProcessing(false)
+    setApiResponse(null)
+    setSubmitError('')
+    const userUser = JSON.parse(localStorage.getItem("user"))
+    if (userUser) setFormData(prev => ({ ...prev, fullName: userUser.name || '', email: userUser.email || '' }))
+  }
+
+  if (isProcessing) {
+    return <ClaimProcessingOverlay apiResponse={apiResponse} onReset={handleReset} />
   }
 
   const InputField = ({ label, type="text", field, placeholder, required=true, prefix }) => (
@@ -273,21 +285,19 @@ export default function GadgetClaim({ onComplete }) {
                </h3>
                
                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                 {/* Standard Requirements */}
                  <div className="md:col-span-2">
-                   <FileUploadBox id="d_inv" label="Purchase Invoice" required={true} hint="Common required document" fileData={documents.purchaseInvoice} onChange={f => handleDocChange('purchaseInvoice', f)} />
+                   <FileUploadBox id="d_inv" label="Purchase Invoice" required={true} isPrimary={true} hint="Common required document" fileData={documents.purchaseInvoice} onChange={(f, isPrimary) => handleDocChange('purchaseInvoice', f, isPrimary)} />
                  </div>
 
-                 {/* Conditional Logic */}
                  <AnimatePresence>
                    {(requiresPhotos || requiresEstimate) && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2 flex flex-col gap-6">
                         <div className="bg-[#EEF2FF] border border-[#C7D2FE] rounded-xl p-6 shadow-sm flex flex-col gap-6">
                            {requiresPhotos && (
-                             <FileUploadBox id="d_photos" label="Device Photos" hint="Clear photos showing damage" required={true} fileData={documents.devicePhotos} onChange={f => handleDocChange('devicePhotos', f)} />
+                             <FileUploadBox id="d_photos" label="Device Photos" hint="Clear photos showing damage" required={true} isPrimary={false} fileData={documents.devicePhotos} onChange={(f, isPrimary) => handleDocChange('devicePhotos', f, isPrimary)} />
                            )}
                            {requiresEstimate && (
-                             <FileUploadBox id="d_est" label="Repair Estimate" hint="Quotation from authorized service center" required={true} fileData={documents.repairEstimate} onChange={f => handleDocChange('repairEstimate', f)} />
+                             <FileUploadBox id="d_est" label="Repair Estimate" hint="Quotation from authorized service center" required={true} isPrimary={false} fileData={documents.repairEstimate} onChange={(f, isPrimary) => handleDocChange('repairEstimate', f, isPrimary)} />
                            )}
                         </div>
                      </motion.div>
@@ -295,7 +305,7 @@ export default function GadgetClaim({ onComplete }) {
                    {requiresFir && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2">
                         <div className="bg-[#FEF2F2] border border-[#FCA5A5] rounded-xl p-6 shadow-sm">
-                           <FileUploadBox id="d_fir" label="FIR Copy" hint="Required for stolen devices" required={true} fileData={documents.firCopy} onChange={f => handleDocChange('firCopy', f)} />
+                           <FileUploadBox id="d_fir" label="FIR Copy" hint="Required for stolen devices" required={true} isPrimary={false} fileData={documents.firCopy} onChange={(f, isPrimary) => handleDocChange('firCopy', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
@@ -315,6 +325,12 @@ export default function GadgetClaim({ onComplete }) {
                  </span>
                </label>
              </div>
+
+             {submitError && (
+               <div className="bg-[#FEF2F2] border border-[#FCA5A5] px-4 py-3 rounded-xl">
+                 <span className="text-sm font-semibold text-[#DC2626]">{submitError}</span>
+               </div>
+             )}
 
              <div className="pt-6 border-t border-[#D1D9E0]/50 flex justify-end">
                <motion.button

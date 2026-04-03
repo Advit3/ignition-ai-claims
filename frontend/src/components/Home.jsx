@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Menu, X, Home as HomeIcon, User, BarChart2, MessageSquare, HeartPulse, Smartphone, CarFront, CheckCircle2, Shield, Sparkles } from 'lucide-react'
+import { Menu, X, Home as HomeIcon, User, BarChart2, MessageSquare, HeartPulse, Smartphone, CarFront, CheckCircle2, Shield, Sparkles, LogOut } from 'lucide-react'
 import Profile from './Profile'
 import Analytics from './Analytics'
 import Contact from './Contact'
@@ -44,7 +44,7 @@ const INSURANCE_CARDS = [
   },
 ]
 
-function Sidebar({ isOpen, onClose, activeItem, setActiveItem }) {
+function Sidebar({ isOpen, onClose, activeItem, setActiveItem, onLogout }) {
   const user = JSON.parse(localStorage.getItem('user')) || { 
     name: 'Guest User', 
     email: 'guest@example.com' 
@@ -110,8 +110,8 @@ function Sidebar({ isOpen, onClose, activeItem, setActiveItem }) {
               })}
             </div>
             
-            <div className="mt-auto p-6 border-t border-[#E5E7EB]">
-              <div className="flex items-center gap-3">
+            <div className="mt-auto border-t border-[#E5E7EB]">
+              <div className="p-6 pb-4 flex items-center gap-3">
                  <div className="w-10 h-10 bg-[#EEF2FF] rounded-full flex items-center justify-center text-[#4F46E5] font-bold text-sm shadow-sm">
                    {user.name.charAt(0).toUpperCase()}
                  </div>
@@ -119,6 +119,15 @@ function Sidebar({ isOpen, onClose, activeItem, setActiveItem }) {
                    <p className="text-sm font-bold text-[#111827] tracking-tight truncate">{user.name}</p>
                    <p className="text-xs text-[#6B7280] truncate">{user.email}</p>
                  </div>
+              </div>
+              <div className="px-4 pb-4">
+                <button
+                  onClick={onLogout}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-[#DC2626] hover:bg-[#FEF2F2] transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span className="font-semibold text-sm">Logout</span>
+                </button>
               </div>
             </div>
           </motion.div>
@@ -305,7 +314,7 @@ function HomeView({ onContinue }) {
   )
 }
 
-export default function Home() {
+export default function Home({ onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [currentView, setCurrentView] = useState('home')
 
@@ -359,6 +368,7 @@ export default function Home() {
         onClose={() => setSidebarOpen(false)} 
         activeItem={currentView}
         setActiveItem={setCurrentView}
+        onLogout={onLogout}
       />
 
       <div className="absolute top-4 sm:top-6 left-4 sm:left-6 z-30">

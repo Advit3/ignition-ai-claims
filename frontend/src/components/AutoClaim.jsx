@@ -1,17 +1,24 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle2, UploadCloud, Loader2 } from 'lucide-react'
+import axiosInstance from '../api/axiosInstance'
+import ClaimProcessingOverlay from './ClaimProcessingOverlay'
 
-// Simulated Cloudinary Upload (Ready to replace with real fetch later)
 const uploadToCloudinary = async (file) => {
-  if (file.size > 10 * 1024 * 1024) throw new Error("File exceeds 10MB")
-  // Simulate network delay
-  await new Promise(r => setTimeout(r, 1200))
-  // Return simulated Cloudinary response format
-  return { secure_url: `https://res.cloudinary.com/demo/image/upload/v1/${Date.now()}_${file.name}`, original_name: file.name }
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('upload_preset', 'seedha_claim_upload')
+  formData.append('cloud_name', 'dmzzq2219')
+  const response = await fetch(
+    'https://api.cloudinary.com/v1_1/dmzzq2219/image/upload',
+    { method: 'POST', body: formData }
+  )
+  const data = await response.json()
+  if (!data.secure_url) throw new Error('Upload failed')
+  return data.secure_url
 }
 
-function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
+function FileUploadBox({ id, label, required, hint, fileData, onChange, isPrimary }) {
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState('')
 
@@ -25,10 +32,10 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
       setError('')
       setIsUploading(true)
       try {
-        const response = await uploadToCloudinary(file)
-        onChange(response)
+        const url = await uploadToCloudinary(file)
+        onChange({ name: file.name, secure_url: url }, isPrimary)
       } catch (err) {
-        setError(err.message)
+        setError('File upload failed, please try again')
       } finally {
         setIsUploading(false)
       }
@@ -60,7 +67,7 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
                <UploadCloud className={`w-5 h-5 shrink-0 transition-colors ${fileData ? 'text-[#10B981]' : error ? 'text-red-400' : 'text-[#9CA3AF] group-hover:text-[#4F46E5]'}`} />
             )}
             <span className={`text-sm tracking-wide truncate font-semibold transition-colors ${fileData ? 'text-[#111827]' : error ? 'text-red-500' : 'text-[#9CA3AF] group-hover:text-[#6B7280]'}`}>
-               {isUploading ? 'Uploading...' : fileData ? fileData.original_name : error ? error : 'Choose file (Max 10MB)'}
+               {isUploading ? 'Uploading...' : fileData ? fileData.name : error ? error : 'Choose file (Max 10MB)'}
             </span>
           </div>
           {fileData && !isUploading && <span className="text-xs font-bold text-[#10B981] flex items-center gap-1 shrink-0"><CheckCircle2 className="w-4 h-4"/> Uploaded</span>}
@@ -72,17 +79,11 @@ function FileUploadBox({ id, label, required, hint, fileData, onChange }) {
 
 export default function AutoClaim({ onComplete }) {
   const [formData, setFormData] = useState({
-    // Section 1: User & Policy
     fullName: '', email: '', phone: '', policyNumber: '',
-    // Section 2: Vehicle
     vehicleType: '', vehicleNumber: '', brand: '', model: '', yearOfManufacture: '',
-    // Section 3: Incident
     incidentType: '', incidentDate: '', incidentTime: '', incidentLocation: '', incidentDescription: '',
-    // Section 4: Driver
     driverName: '', drivingLicenseNumber: '', driverAuthorized: '',
-    // Section 5: Claim
     claimType: '', estimatedDamage: '',
-    // Declaration
     declaration: false
   })
 
@@ -97,9 +98,11 @@ export default function AutoClaim({ onComplete }) {
     additionalDocs: null
   })
 
-  const [submitted, setSubmitted] = useState(false)
+  const [documentUrl, setDocumentUrl] = useState('')
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [apiResponse, setApiResponse] = useState(null)
+  const [submitError, setSubmitError] = useState('')
 
-  // Pre-fill user data conceptually
   useEffect(() => {
     const userUser = JSON.parse(localStorage.getItem("user"))
     if (userUser) {
@@ -115,59 +118,63 @@ export default function AutoClaim({ onComplete }) {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  const handleDocChange = (field, docObj) => {
+  const handleDocChange = (field, docObj, isPrimary) => {
     setDocuments(prev => ({ ...prev, [field]: docObj }))
+    if (isPrimary && docObj?.secure_url) {
+      setDocumentUrl(docObj.secure_url)
+    }
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
+    setSubmitError('')
+
+    if (!documentUrl) {
+      setSubmitError('Please upload a document before submitting')
+      return
+    }
 
     const payload = {
-      userDetails: { fullName: formData.fullName, email: formData.email, phone: formData.phone },
-      policyDetails: { policyNumber: formData.policyNumber },
-      vehicleDetails: { vehicleType: formData.vehicleType, vehicleNumber: formData.vehicleNumber, brand: formData.brand, model: formData.model, yearOfManufacture: formData.yearOfManufacture },
-      incidentDetails: { incidentType: formData.incidentType, incidentDate: formData.incidentDate, incidentTime: formData.incidentTime, incidentLocation: formData.incidentLocation, incidentDescription: formData.incidentDescription },
-      driverDetails: { driverName: formData.driverName, drivingLicenseNumber: formData.drivingLicenseNumber, driverAuthorized: formData.driverAuthorized },
-      claimDetails: { claimType: formData.claimType, estimatedDamage: formData.estimatedDamage },
-      // Store secure_url only
-      documents: {
-        vehicleRc: documents.vehicleRc?.secure_url || null,
-        insurancePolicy: documents.insurancePolicy?.secure_url || null,
-        damagePhotos: documents.damagePhotos?.secure_url || null,
-        drivingLicenseDoc: documents.drivingLicenseDoc?.secure_url || null,
-        firCopy: documents.firCopy?.secure_url || null,
-        policeReport: documents.policeReport?.secure_url || null,
-        thirdPartyDetails: documents.thirdPartyDetails?.secure_url || null,
-        additionalDocs: documents.additionalDocs?.secure_url || null,
-      }
+      claim_type: 'Auto Insurance',
+      claim_amount: parseFloat(formData.estimatedDamage) || 0,
+      document_url: documentUrl,
+      description: formData.incidentDescription || 'Auto insurance claim',
     }
-    
-    console.log("Submitting Auto Claim:", payload)
 
-    setSubmitted(true)
-    setTimeout(() => {
-        if (onComplete) onComplete()
-    }, 4000)
+    setIsProcessing(true)
+    setApiResponse(null)
+
+    try {
+      const [response] = await Promise.all([
+        axiosInstance.post('/api/v1/claims/submit', payload),
+        new Promise(resolve => setTimeout(resolve, 3500))
+      ])
+      setApiResponse(response.data.data)
+    } catch (err) {
+      setApiResponse({ claim_status: 'error', status_reason: err.response?.data?.message || 'Submission failed' })
+    }
   }
 
-  if (submitted) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center p-4">
-        <motion.div
-           initial={{ opacity: 0, scale: 0.95 }}
-           animate={{ opacity: 1, scale: 1 }}
-           className="w-full max-w-lg bg-white rounded-2xl border border-[#D1D9E0] shadow-[0_8px_20px_rgba(0,0,0,0.06)] p-10 text-center flex flex-col items-center"
-        >
-          <div className="w-20 h-20 bg-[#10B981]/10 rounded-full flex items-center justify-center mb-6 shadow-[0_2px_10px_rgba(16,185,129,0.2)] border border-[#10B981]/20">
-            <CheckCircle2 className="w-10 h-10 text-[#10B981]" strokeWidth={2.5} />
-          </div>
-          <h2 className="text-2xl font-black text-[#111827] tracking-tight mb-2">Claim Submitted Successfully</h2>
-          <p className="text-[#6B7280] font-semibold max-w-sm mx-auto leading-relaxed">
-            Your auto insurance claim and vehicle documents have been securely transmitted to our processing center.
-          </p>
-        </motion.div>
-      </div>
-    )
+  const handleReset = () => {
+    setFormData({
+      fullName: '', email: '', phone: '', policyNumber: '',
+      vehicleType: '', vehicleNumber: '', brand: '', model: '', yearOfManufacture: '',
+      incidentType: '', incidentDate: '', incidentTime: '', incidentLocation: '', incidentDescription: '',
+      driverName: '', drivingLicenseNumber: '', driverAuthorized: '',
+      claimType: '', estimatedDamage: '',
+      declaration: false
+    })
+    setDocuments({ vehicleRc: null, insurancePolicy: null, damagePhotos: null, drivingLicenseDoc: null, firCopy: null, policeReport: null, thirdPartyDetails: null, additionalDocs: null })
+    setDocumentUrl('')
+    setIsProcessing(false)
+    setApiResponse(null)
+    setSubmitError('')
+    const userUser = JSON.parse(localStorage.getItem("user"))
+    if (userUser) setFormData(prev => ({ ...prev, fullName: userUser.name || '', email: userUser.email || '' }))
+  }
+
+  if (isProcessing) {
+    return <ClaimProcessingOverlay apiResponse={apiResponse} onReset={handleReset} />
   }
 
   const InputField = ({ label, type="text", field, placeholder, required=true, prefix }) => (
@@ -292,39 +299,37 @@ export default function AutoClaim({ onComplete }) {
                </h3>
                
                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                 {/* Base Requirements */}
-                 <FileUploadBox id="doc_rc" label="Vehicle Registration Certificate (RC)" required={true} fileData={documents.vehicleRc} onChange={f => handleDocChange('vehicleRc', f)} />
-                 <FileUploadBox id="doc_policy" label="Insurance Policy Document" required={true} fileData={documents.insurancePolicy} onChange={f => handleDocChange('insurancePolicy', f)} />
+                 <FileUploadBox id="doc_rc" label="Vehicle Registration Certificate (RC)" required={true} isPrimary={true} fileData={documents.vehicleRc} onChange={(f, isPrimary) => handleDocChange('vehicleRc', f, isPrimary)} />
+                 <FileUploadBox id="doc_policy" label="Insurance Policy Document" required={true} isPrimary={false} fileData={documents.insurancePolicy} onChange={(f, isPrimary) => handleDocChange('insurancePolicy', f, isPrimary)} />
 
-                 {/* Conditional Logic */}
                  <AnimatePresence>
                    {requiresAccidentLogic && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2 flex flex-col gap-6">
                         <div className="bg-[#EEF2FF] border border-[#C7D2FE] rounded-xl p-6 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6">
-                           <FileUploadBox id="doc_dmg_photos" label="Damage Photos" hint="Clear photos showing damage" required={true} fileData={documents.damagePhotos} onChange={f => handleDocChange('damagePhotos', f)} />
-                           <FileUploadBox id="doc_dl" label="Driving License" hint="License of the driver at the time of incident" required={true} fileData={documents.drivingLicenseDoc} onChange={f => handleDocChange('drivingLicenseDoc', f)} />
+                           <FileUploadBox id="doc_dmg_photos" label="Damage Photos" hint="Clear photos showing damage" required={true} isPrimary={false} fileData={documents.damagePhotos} onChange={(f, isPrimary) => handleDocChange('damagePhotos', f, isPrimary)} />
+                           <FileUploadBox id="doc_dl" label="Driving License" hint="License of the driver at the time of incident" required={true} isPrimary={false} fileData={documents.drivingLicenseDoc} onChange={(f, isPrimary) => handleDocChange('drivingLicenseDoc', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
                    {requiresTheftLogic && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2">
                         <div className="bg-[#FEF2F2] border border-[#FCA5A5] rounded-xl p-6 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6">
-                           <FileUploadBox id="doc_fir" label="FIR Copy" hint="Required for stolen device claims" required={true} fileData={documents.firCopy} onChange={f => handleDocChange('firCopy', f)} />
-                           <FileUploadBox id="doc_police" label="Police Report" hint="Official police documentation" required={true} fileData={documents.policeReport} onChange={f => handleDocChange('policeReport', f)} />
+                           <FileUploadBox id="doc_fir" label="FIR Copy" hint="Required for stolen device claims" required={true} isPrimary={false} fileData={documents.firCopy} onChange={(f, isPrimary) => handleDocChange('firCopy', f, isPrimary)} />
+                           <FileUploadBox id="doc_police" label="Police Report" hint="Official police documentation" required={true} isPrimary={false} fileData={documents.policeReport} onChange={(f, isPrimary) => handleDocChange('policeReport', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
                    {requiresThirdPartyLogic && (
                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="md:col-span-2 overflow-hidden mt-2">
                         <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-xl p-6 shadow-sm">
-                           <FileUploadBox id="doc_third_party" label="Third-Party Details Document" hint="Information of the other involved party" required={true} fileData={documents.thirdPartyDetails} onChange={f => handleDocChange('thirdPartyDetails', f)} />
+                           <FileUploadBox id="doc_third_party" label="Third-Party Details Document" hint="Information of the other involved party" required={true} isPrimary={false} fileData={documents.thirdPartyDetails} onChange={(f, isPrimary) => handleDocChange('thirdPartyDetails', f, isPrimary)} />
                         </div>
                      </motion.div>
                    )}
                  </AnimatePresence>
 
                  <div className="md:col-span-2 border-t border-[#D1D9E0]/50 pt-6 mt-2">
-                   <FileUploadBox id="doc_additional" label="Additional Supporting Documents" hint="Optional (Dashcam footage, witness statement, etc.)" required={false} fileData={documents.additionalDocs} onChange={f => handleDocChange('additionalDocs', f)} />
+                   <FileUploadBox id="doc_additional" label="Additional Supporting Documents" hint="Optional (Dashcam footage, witness statement, etc.)" required={false} isPrimary={false} fileData={documents.additionalDocs} onChange={(f, isPrimary) => handleDocChange('additionalDocs', f, isPrimary)} />
                  </div>
                </div>
              </div>
@@ -341,6 +346,12 @@ export default function AutoClaim({ onComplete }) {
                  </span>
                </label>
              </div>
+
+             {submitError && (
+               <div className="bg-[#FEF2F2] border border-[#FCA5A5] px-4 py-3 rounded-xl">
+                 <span className="text-sm font-semibold text-[#DC2626]">{submitError}</span>
+               </div>
+             )}
 
              <div className="pt-6 border-t border-[#D1D9E0]/50 flex justify-end">
                <motion.button

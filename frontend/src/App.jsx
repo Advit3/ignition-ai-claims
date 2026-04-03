@@ -10,7 +10,11 @@ function App() {
   const [appState, setAppState] = useState('landing') // States: 'landing', 'auth', 'home'
 
   if (appState === 'home') {
-    return <Home />
+    return <Home onLogout={() => {
+      localStorage.removeItem('accessToken')
+      localStorage.removeItem('user')
+      setAppState('landing')
+    }} />
   }
 
   if (appState === 'auth') {
