@@ -30,6 +30,7 @@ export const validateDateScore = (billDate) => {
  * Transforms raw claim and user data into a structured feature array.
  */
 export const buildFeatures = (claimData, userHistory) => {
+    console.log("[TRACE - ML 1. BUILD FEATURES INPUT]", { claimData, userHistory });
     const claimAmount = claimData.claim_amount || 0.0;
     const frequency = userHistory.past_claims || 0;
     const avgClaimAmount = userHistory.avg_claim_amount || 0.0;
@@ -48,17 +49,60 @@ export const buildFeatures = (claimData, userHistory) => {
 
     const timeGap = userHistory.last_claim_days || 0;
 
-    return [claimAmount, frequency, amountRatio, finalDocScore, timeGap];
+    const features = [claimAmount, frequency, amountRatio, finalDocScore, timeGap];
+    console.log("[TRACE - ML 2. BUILD FEATURES OUTPUT]", features);
+    return features;
 };
 
 /**
  * Simulates the ML Model prediction.
  * In production, Node.js calls the Python Microservice here.
  */
+/**
+ * Simulates the ML Model prediction using a Rules-Based Heuristic for the hackathon.
+ */
 export const predictFraud = (features) => {
-    // Cannot load model.pkl in JS directly. 
-    // Defaulting to fallback or you would call your Axios Python API here.
-    return 0.5;
+    console.log("[TRACE - ML 3. PREDICT INPUT]", features);
+    // Unpack the features array we built earlier
+    // features = [claimAmount, frequency, amountRatio, finalDocScore, timeGap]
+    const [rawClaimAmount, frequency, rawAmountRatio, rawFinalDocScore, timeGap] = features;
+
+    // Safely parse to ensure docMatchScore and amountRatio do not become NaN
+    const claimAmount = isNaN(rawClaimAmount) ? 0 : Number(rawClaimAmount);
+    const amountRatio = isNaN(rawAmountRatio) ? 0 : Number(rawAmountRatio);
+    const finalDocScore = isNaN(rawFinalDocScore) ? 0 : Number(rawFinalDocScore);
+
+    let simulatedRisk = 0.1; // Base risk for a standard claim
+
+    // 🚩 FLAG 1: The "Liar" Penalty (OCR Mismatch)
+    // If the doc_match_score is terrible (e.g., 0.1), spike the risk massively.
+    if (finalDocScore < 0.5) {
+        simulatedRisk += 0.70;
+        console.log("[TRACE - ML FLAG] Liar penalty applied! +0.70");
+        console.log("🚩 ML ALERT: OCR Document Mismatch Detected!");
+    }
+
+    // 🚩 FLAG 2: The "Anomaly" Penalty
+    // If they are claiming 80x their usual average amount (amountRatio)
+    if (amountRatio > 10.0) {
+        simulatedRisk += 0.40;
+        console.log("[TRACE - ML FLAG] Anomaly penalty applied! >10.0 +0.40");
+        console.log("🚩 ML ALERT: Claim amount is abnormally high for this user.");
+    } else if (amountRatio > 3.0) {
+        simulatedRisk += 0.15;
+        console.log("[TRACE - ML FLAG] Anomaly penalty applied! >3.0 +0.15");
+    }
+
+    // 🚩 FLAG 3: High-Value Risk
+    if (claimAmount > 50000) {
+        simulatedRisk += 0.20;
+        console.log("[TRACE - ML FLAG] High-Value Risk applied! +0.20");
+    }
+
+    // Ensure the final probability stays between 0.0 (Perfect) and 1.0 (Definite Fraud)
+    const finalProb = Math.min(1.0, Math.max(0.0, simulatedRisk));
+    console.log("[TRACE - ML 4. FINAL RAW RISK]", finalProb);
+    return finalProb;
 };
 
 /**
@@ -82,10 +126,22 @@ export const calculateTrustScore = (userHistory) => {
 /**
  * Fuses the ML fraud probability with the user's historical trust score.
  */
+/**
+ * Fuses the ML fraud probability with the user's historical trust score.
+ */
 export const computeFinalRisk = (fraudProbability, trustScore) => {
-    // Trust score influence is capped to avoid overriding strong fraud signals
+    // 🛑 THE "HARD FAIL" RULE:
+    // If the raw fraud probability is massive (e.g., they failed the OCR check),
+    // do NOT let their good history save them. 
+    if (fraudProbability >= 0.75) {
+        console.log("🛑 TRUST BYPASS: Blatant fraud detected. Trust score ignored.");
+        return fraudProbability; // Return the raw 0.80+ score!
+    }
+
+    // Otherwise, apply the trust score discount for borderline claims
     const trustImpact = 0.7 * trustScore;
     const adjustedScore = fraudProbability * (1.0 - trustImpact);
+
     return adjustedScore;
 };
 
