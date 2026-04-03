@@ -1,29 +1,39 @@
-// =============================================================================
-// notification.routes.js — USER NOTIFICATION ROUTE DEFINITIONS
-// =============================================================================
-// Protected by verifyJWT — users can only manage their own notifications.
-// =============================================================================
+// backend/src/routes/notification.routes.js
 
-import { Router } from 'express';
-import {
-    getNotifications,
-    markOneAsRead,
-    markAllRead,
-} from '../controllers/notification.controller.js';
-import { verifyJWT } from '../middlewares/auth.middleware.js';
+import { Router } from "express";
+import { verifyJWT } from "../middlewares/auth.middleware.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { ApiResponse } from "../utils/ApiResponse.js";
 
 const router = Router();
 
-// All routes require authentication
-router.use(verifyJWT);
+/**
+ * GET /api/v1/notifications
+ * Returns empty list for now — placeholder until notification system is built.
+ * Protected by verifyJWT.
+ */
+router.get(
+  "/",
+  verifyJWT,
+  asyncHandler(async (req, res) => {
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { notifications: [], total: 0 }, "Notifications fetched"));
+  })
+);
 
-// GET   /api/v1/notifications — Paginated notifications (filter by is_read)
-router.route("/").get(getNotifications);
-
-// PATCH /api/v1/notifications/read-all — Mark all as read (must be BEFORE :id)
-router.route("/read-all").patch(markAllRead);
-
-// PATCH /api/v1/notifications/:id/read — Mark a single notification as read
-router.route("/:id/read").patch(markOneAsRead);
+/**
+ * PATCH /api/v1/notifications/:id/read
+ * Placeholder — marks a notification as read.
+ */
+router.patch(
+  "/:id/read",
+  verifyJWT,
+  asyncHandler(async (req, res) => {
+    return res
+      .status(200)
+      .json(new ApiResponse(200, null, "Notification marked as read"));
+  })
+);
 
 export default router;

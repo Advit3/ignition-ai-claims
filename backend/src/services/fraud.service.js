@@ -8,22 +8,37 @@
  * @returns {number} 0.0 to 1.0
  */
 export const validateDateScore = (billDate) => {
-    if (!billDate) return 0.0;
+  if (!billDate) return 0.0;
 
-    try {
-        const dt = new Date(billDate);
-        if (isNaN(dt.getTime())) return 0.0; // Invalid date format
+  try {
+    let dt;
 
-        const now = new Date();
-        // Calculate difference in days
-        const deltaDays = Math.floor((now - dt) / (1000 * 60 * 60 * 24));
-
-        if (deltaDays < 0) return 0.0; // Future date (Highly suspicious)
-        if (deltaDays > 90) return 0.5; // Older than 3 months
-        return 1.0;                     // Recent and valid
-    } catch (error) {
-        return 0.0;
+    // Check if it's DD-MM-YYYY format (what Gemini returns)
+    const ddmmyyyy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(billDate);
+    if (ddmmyyyy) {
+      // Parse manually: day=ddmmyyyy[1], month=ddmmyyyy[2]-1, year=ddmmyyyy[3]
+      dt = new Date(
+        parseInt(ddmmyyyy[3]),   // year
+        parseInt(ddmmyyyy[2]) - 1, // month (0-indexed)
+        parseInt(ddmmyyyy[1])    // day
+      );
+    } else {
+      // Fallback: treat as ISO string (e.g. "2026-04-03T20:03:27.724Z")
+      dt = new Date(billDate);
     }
+
+    if (isNaN(dt.getTime())) return 0.0; // Still invalid after both attempts
+
+    const now = new Date();
+    const deltaDays = Math.floor((now - dt) / (1000 * 60 * 60 * 24));
+
+    if (deltaDays < 0)   return 0.0; // Future date — suspicious
+    if (deltaDays > 90)  return 0.5; // Older than 3 months — reduced trust
+    return 1.0;                       // Recent and valid
+
+  } catch (error) {
+    return 0.0;
+  }
 };
 
 /**

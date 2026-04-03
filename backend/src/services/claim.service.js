@@ -23,14 +23,14 @@ import {
 } from "../constants/appConstants.js";
 
 // ─── INTEGRATED SERVICE IMPORTS ─────────────────────────────────────────────
-import { extractClaimData } from "./ocr.service.js";
+import { extractClaimDataFromUrl } from "./ocr.service.js";
 import {
     buildFeatures,
     predictFraud,
     calculateTrustScore,
     computeFinalRisk,
 } from "./fraud.service.js";
-import { makeDecision } from "./decision.services.js";
+import { makeDecision } from "./decision.service.js";
 
 // ─── HELPER: Generate unique claim_id ───────────────────────────────────────
 /**
@@ -86,7 +86,7 @@ export const submitClaim = async (claimData) => {
         let ocrResult = null;
         try {
             logger.info("Pipeline Stage 2/5: THE EYES — calling OCR service", { claim_id });
-            ocrResult = await extractClaimData(document_url);
+            ocrResult = await extractClaimDataFromUrl(document_url);
 
             // 🔍 DEBUG: Log the full parsed OCR result immediately
             logger.info("Parsed OCR Result:", ocrResult);
@@ -155,16 +155,54 @@ export const submitClaim = async (claimData) => {
         // =========================================================================
         logger.info("Pipeline Stage 3/5: THE BRAIN — running fraud analysis", { claim_id });
 
-        // Mock user history representing database stats
-        // TODO: In production, fetch real stats from User + Claim aggregation
-        const userHistory = {
-            total_claims: 5,
-            fraud_count: 0,
-            rejected_claims: 1,
-            past_claims: 5,
-            avg_claim_amount: 2500,
-            last_claim_days: 30,
-        };
+        /**
+         * Fetch real user claim history from MongoDB for fraud feature engineering.
+         * Uses aggregation pipeline for performance — one DB call instead of multiple.
+         */
+        const userHistory = await (async () => {
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+          const [stats] = await Claim.aggregate([
+            { $match: { user_id: String(user_id) } },
+            {
+              $group: {
+                _id: null,
+                total_claims:     { $sum: 1 },
+                fraud_count:      { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
+                rejected_claims:  { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
+                avg_claim_amount: { $avg: "$claim_amount" },
+                last_claim_date:  { $max: "$created_at" },
+              },
+            },
+          ]);
+
+          // If no history found — this is their first claim, use clean defaults
+          if (!stats) {
+            return {
+              total_claims:     0,
+              fraud_count:      0,
+              rejected_claims:  0,
+              past_claims:      0,
+              avg_claim_amount: claim_amount, // use current amount as baseline
+              last_claim_days:  999,          // no prior claims
+            };
+          }
+
+          // Calculate days since last claim
+          const lastClaimDays = stats.last_claim_date
+            ? Math.floor((Date.now() - new Date(stats.last_claim_date)) / (1000 * 60 * 60 * 24))
+            : 999;
+
+          return {
+            total_claims:     stats.total_claims,
+            fraud_count:      stats.fraud_count,
+            rejected_claims:  stats.rejected_claims,
+            past_claims:      stats.total_claims,
+            avg_claim_amount: Math.round(stats.avg_claim_amount || claim_amount),
+            last_claim_days:  lastClaimDays,
+          };
+        })();
 
         // Build the ML feature vector
         const features = buildFeatures(
