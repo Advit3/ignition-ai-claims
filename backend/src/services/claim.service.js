@@ -64,221 +64,120 @@ export const submitClaim = async (claimData) => {
         // =========================================================================
         // STEP 1: INITIALIZATION
         // =========================================================================
-        console.log("[TRACE - 1. INITIAL INPUT]", claimData);
-
         const { user_id, claim_type, claim_amount, document_url, description } = claimData;
         const claim_id = generateClaimId();
         const requestId = crypto.randomUUID();
 
-        logger.info("Pipeline Stage 1/5: INITIALIZATION", {
-            claim_id,
-            user_id,
-            claim_type,
-            claim_amount,
-            requestId,
-        });
+        logger.info("Pipeline Stage 1/5: INITIALIZATION", { claim_id, user_id });
 
         // =========================================================================
-        // STEP 2: THE "EYES" — OCR Service (Gemini Vision)
+        // STEP 2: THE "EYES" — OCR Service
         // =========================================================================
-        // Wrapped in try/catch so a bad image never crashes the pipeline.
-        // If OCR fails, we continue with defaults — the claim still gets processed.
         let ocrResult = null;
         try {
             logger.info("Pipeline Stage 2/5: THE EYES — calling OCR service", { claim_id });
             ocrResult = await extractClaimDataFromUrl(document_url);
 
-            // 🔍 DEBUG: Log the full parsed OCR result immediately
+            // Log the nested structure coming from Python
             logger.info("Parsed OCR Result:", ocrResult);
-
-            logger.info("Pipeline Stage 2/5: THE EYES — OCR complete", {
-                claim_id,
-                ocr_success: !!ocrResult,
-                extracted_amount: ocrResult?.total_amount ?? "N/A",
-                provider: ocrResult?.provider_name ?? "N/A",
-            });
         } catch (ocrError) {
-            logger.warn("Pipeline Stage 2/5: THE EYES — OCR failed, continuing with defaults", {
-                claim_id,
-                error: ocrError.message,
-                stack: ocrError.stack,
-            });
+            logger.warn("Pipeline Stage 2/5: THE EYES — OCR failed", { claim_id, error: ocrError.message });
             ocrResult = null;
         }
 
-        // ── Calculate Doc Match Score based on OCR findings ──────────────────
-        console.log("[TRACE - 2. BEFORE COMPARISON]", {
-            typeof_claim_amount: typeof claim_amount,
-            typeof_ocr_total_amount: ocrResult ? typeof ocrResult.total_amount : "undefined"
-        });
+        // 🚨 FORGERY CIRCUIT BREAKER
+        // If the AI is suspicious, we stop STP immediately and escalate.
+        if (ocrResult?.forgery_analysis?.is_suspicious) {
+            logger.warn("🚩 FORGERY DETECTED: Escalating to Manual Review", { claim_id });
 
-        let docMatchScore = 0.5; // Default middle-ground
-
-        if (ocrResult && ocrResult.total_amount !== null && ocrResult.total_amount !== undefined) {
-            // Safe comparison using parseFloat — handles strings, NaN, etc.
-            const ocrAmount = parseFloat(ocrResult.total_amount);
-            const userAmount = parseFloat(claim_amount);
-
-            if (!isNaN(ocrAmount) && !isNaN(userAmount)) {
-                if (userAmount === ocrAmount) {
-                    docMatchScore = 1.0; // Perfect match — high trust
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Amounts matched exactly" });
-                    logger.info("Calculated docMatchScore: 1.0 (PERFECT MATCH)", {
-                        claim_id, ocr_amount: ocrAmount, user_amount: userAmount,
-                    });
-                } else if (userAmount < ocrAmount) {
-                    // ✅ NEW RULE: Under-claiming is safe (partial claim / deductible)
-                    docMatchScore = 0.8;
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Valid under-claim / partial claim" });
-                    logger.info(`Calculated docMatchScore: 0.8 (PARTIAL CLAIM) on ${claim_id}: User claimed ${userAmount} for bill of ${ocrAmount}`);
-                } else {
-                    // 🚨 FRAUD RULE: Over-claiming (Liar!)
-                    docMatchScore = 0.1; // Amount mismatch — high fraud risk
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Amount mismatch detected (Over-claim)" });
-                    logger.warn(`Calculated docMatchScore: 0.1 (OVER-CLAIM) on ${claim_id}! User claimed ${userAmount}, OCR found ${ocrAmount}`);
-                }
-            } else {
-                // Failsafe in case Gemini returns weird text that parseFloat turns into NaN
-                docMatchScore = 0.5;
-                console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Could not parse amounts to valid numbers" });
-                logger.warn("Calculated docMatchScore: 0.5 (PARSE FAILED)", { claim_id, ocr_amount: ocrResult.total_amount, user_amount: claim_amount });
-            }
-        } else {
-            console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Default - No OCR amount available" });
-            logger.info("Calculated docMatchScore: 0.5 (DEFAULT — no OCR amount available)", {
-                claim_id,
+            return await Claim.create({
+                claim_id, user_id, claim_amount, claim_type, document_url, description,
+                fraud_score: 1.0,
+                claim_status: CLAIM_STATUS.PENDING, // Force Manual Review
+                status_reason: `AI Forensics Alert: ${ocrResult.forgery_analysis.reason}`,
+                ocr_data: ocrResult,
+                doc_match: 0.1,
+                ml_request_id: requestId,
             });
         }
 
-        // =========================================================================
-        // STEP 3: THE "BRAIN" — Fraud Service (Feature Engineering + ML)
-        // =========================================================================
-        logger.info("Pipeline Stage 3/5: THE BRAIN — running fraud analysis", { claim_id });
+        // ── Calculate Doc Match Score (FIXED FOR NESTING) ──────────────────
+        let docMatchScore = 0.5;
+        const extractedAmount = ocrResult?.data?.total_amount;
 
-        /**
-         * Fetch real user claim history from MongoDB for fraud feature engineering.
-         * Uses aggregation pipeline for performance — one DB call instead of multiple.
-         */
+        if (extractedAmount !== null && extractedAmount !== undefined) {
+            const ocrAmount = parseFloat(extractedAmount);
+            const userAmount = parseFloat(claim_amount);
+
+            if (!isNaN(ocrAmount) && !isNaN(userAmount)) {
+                // Perfect match within a 1-unit margin of error
+                if (Math.abs(userAmount - ocrAmount) < 1) {
+                    docMatchScore = 1.0;
+                } else if (userAmount < ocrAmount) {
+                    docMatchScore = 0.8; // Safe partial/deductible claim
+                } else {
+                    docMatchScore = 0.1; // Fraudulent over-claim
+                }
+            }
+        }
+
+        // =========================================================================
+        // STEP 3: THE "BRAIN" — Fraud Service
+        // =========================================================================
         const userHistory = await (async () => {
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const [stats] = await Claim.aggregate([
+                { $match: { user_id: String(user_id) } },
+                {
+                    $group: {
+                        _id: null,
+                        total_claims: { $sum: 1 },
+                        avg_claim_amount: { $avg: "$claim_amount" },
+                        last_claim_date: { $max: "$created_at" },
+                    },
+                },
+            ]);
 
-          const [stats] = await Claim.aggregate([
-            { $match: { user_id: String(user_id) } },
-            {
-              $group: {
-                _id: null,
-                total_claims:     { $sum: 1 },
-                fraud_count:      { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
-                rejected_claims:  { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
-                avg_claim_amount: { $avg: "$claim_amount" },
-                last_claim_date:  { $max: "$created_at" },
-              },
-            },
-          ]);
+            if (!stats) return { total_claims: 0, avg_claim_amount: claim_amount, last_claim_days: 999 };
 
-          // If no history found — this is their first claim, use clean defaults
-          if (!stats) {
+            // 🛡️ MATH FAILSAFE: Prevent "Sextillion Rupee" Poisoning
+            let saneAvg = stats.avg_claim_amount;
+            if (saneAvg > 1000000000) {
+                logger.error("☢️ SEXTILLION MATH DETECTED: Using claim_amount as fallback", { saneAvg });
+                saneAvg = claim_amount;
+            }
+
             return {
-              total_claims:     0,
-              fraud_count:      0,
-              rejected_claims:  0,
-              past_claims:      0,
-              avg_claim_amount: claim_amount, // use current amount as baseline
-              last_claim_days:  999,          // no prior claims
+                total_claims: stats.total_claims,
+                avg_claim_amount: saneAvg,
+                last_claim_days: Math.floor((Date.now() - new Date(stats.last_claim_date)) / 86400000) || 0
             };
-          }
-
-          // Calculate days since last claim
-          const lastClaimDays = stats.last_claim_date
-            ? Math.floor((Date.now() - new Date(stats.last_claim_date)) / (1000 * 60 * 60 * 24))
-            : 999;
-
-          return {
-            total_claims:     stats.total_claims,
-            fraud_count:      stats.fraud_count,
-            rejected_claims:  stats.rejected_claims,
-            past_claims:      stats.total_claims,
-            avg_claim_amount: Math.round(stats.avg_claim_amount || claim_amount),
-            last_claim_days:  lastClaimDays,
-          };
         })();
 
-        // Build the ML feature vector
-        const features = buildFeatures(
-            {
-                claim_amount,
-                bill_date: ocrResult?.date_of_service || new Date().toISOString(),
-                doc_match_score: docMatchScore,
-            },
-            userHistory
-        );
-
-        // Execute the full ML pipeline
+        const features = buildFeatures({ claim_amount, doc_match_score: docMatchScore }, userHistory);
         const rawFraudProbability = predictFraud(features);
         const trustScore = calculateTrustScore(userHistory);
         const finalFraudScore = computeFinalRisk(rawFraudProbability, trustScore);
 
-        logger.info("Pipeline Stage 3/5: THE BRAIN — analysis complete", {
-            claim_id,
-            features,
-            raw_fraud_probability: rawFraudProbability,
-            trust_score: trustScore,
-            final_fraud_score: finalFraudScore,
-        });
-
         // =========================================================================
-        // STEP 4: THE "JUDGE" — STP Decision Engine
+        // STEP 4 & 5: THE JUDGE & THE RECORD
         // =========================================================================
-        logger.info("Pipeline Stage 4/5: THE JUDGE — evaluating decision matrix", { claim_id });
-
         const decision = makeDecision(finalFraudScore, trustScore, rawFraudProbability);
-        const { status: claimStatus, reason } = decision;
 
-        logger.info("Pipeline Stage 4/5: THE JUDGE — verdict rendered", {
-            claim_id,
-            claim_status: claimStatus,
-            stp_reason: reason,
-            final_fraud_score: finalFraudScore,
-        });
-
-        // =========================================================================
-        // STEP 5: THE RECORD — Persist to Database
-        // =========================================================================
-        logger.info("Pipeline Stage 5/5: THE RECORD — saving to database", { claim_id });
-
-        const dbPayload = {
-            claim_id,
-            user_id,
-            claim_amount,
-            claim_type,
-            document_url,
-            description,
+        const newClaim = await Claim.create({
+            claim_id, user_id, claim_amount, claim_type, document_url, description,
             fraud_score: finalFraudScore,
-            claim_status: claimStatus,
-            status_reason: reason,
+            claim_status: decision.status,
+            status_reason: decision.reason,
             ocr_data: ocrResult || {},
             doc_match: docMatchScore,
             ml_request_id: requestId,
-        };
-
-        console.log("[TRACE - 8. FINAL DB PAYLOAD]", dbPayload);
-
-        const newClaim = await Claim.create(dbPayload);
-
-        logger.info("Pipeline COMPLETE — claim processed successfully", {
-            claim_id,
-            claim_status: claimStatus,
-            fraud_score: finalFraudScore,
-            doc_match: docMatchScore,
-            requestId,
         });
 
         return newClaim;
 
     } catch (error) {
         logger.error("FATAL PIPELINE CRASH:", error.stack);
-        throw new ApiError(500, "An internal error occurred during claim processing.");
+        throw new ApiError(500, "Internal Server Error");
     }
 };
 
@@ -385,4 +284,12 @@ export const updateClaimStatus = async (claimId, payload, actorId) => {
     await claim.save();
 
     return claim.toObject();
+};
+
+export const verifyBillMath = (ocrData) => {
+    // If your OCR extracts subtotal and tax:
+    if (ocrData.subtotal + ocrData.tax !== ocrData.total_amount) {
+        return { is_math_valid: false, reason: "Bill totals do not sum up correctly." };
+    }
+    return { is_math_valid: true };
 };
