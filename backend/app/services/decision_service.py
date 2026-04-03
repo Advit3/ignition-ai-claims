@@ -2,10 +2,25 @@
 # Contains business logic for overall routing of claims based on risk signals
 
 def make_decision(final_risk, trust_score, fraud_probability):
-    if final_risk > 0.8 or fraud_probability > 0.85:
+    if final_risk > 0.8 and fraud_probability > 0.95:
         return {
             "decision": "REJECTED",
-            "reason": "High fraud probability detected - automatic rejection"
+            "reason": "High fraud probability and final risk exceed safe thresholds"
+        }
+    elif final_risk > 0.8:
+        return {
+            "decision": "REJECTED",
+            "reason": "Final risk exceeds automatic rejection threshold"
+        }
+    elif fraud_probability > 0.95:
+        return {
+            "decision": "REJECTED",
+            "reason": "Extreme fraud probability detected - automatic rejection"
+        }
+    elif fraud_probability > 0.85:
+        return {
+            "decision": "REVIEW",
+            "reason": "High fraud probability - requires manual verification"
         }
 
     if trust_score > 0.8:
