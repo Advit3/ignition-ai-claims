@@ -1,30 +1,28 @@
-// =============================================================================
-// claim.routes.js — CLAIM ROUTE DEFINITIONS
-// =============================================================================
-// All claim routes are protected by verifyJWT — only authenticated users
-// can submit or view claims.
-// =============================================================================
-
-import { Router } from 'express';
+import { Router } from "express";
 import {
-    submitClaim,
-    getMyClaims,
-    getClaimById,
-} from '../controllers/claim.controller.js';
-import { verifyJWT } from '../middlewares/auth.middleware.js';
+    submitClaimController,
+    getMyClaimsController,
+    getClaimByIdController,
+    updateClaimStatusController,
+} from "../controllers/claim.controller.js";
 
 const router = Router();
 
-// ── All routes below require authentication ─────────────────────────────────
-router.use(verifyJWT);
+/**
+ * All routes here are already protected by verifyJWT
+ * applied at the app.js level. Do NOT add verifyJWT again here.
+ */
 
-// POST /api/v1/claims/submit — Submit a new insurance claim
-router.route("/submit").post(submitClaim);
+// 1. Submit a new claim
+router.post("/submit", submitClaimController);
 
-// GET /api/v1/claims/my-claims — List all claims for the logged-in user
-router.route("/my-claims").get(getMyClaims);
+// 2. Get all claims belonging to the logged-in user
+router.get("/", getMyClaimsController);
 
-// GET /api/v1/claims/:claimId — Get a specific claim by its custom claim_id
-router.route("/:claimId").get(getClaimById);
+// 3. Get a single claim by custom ID (Notice the change to :claimId)
+router.get("/:claimId", getClaimByIdController);
+
+// 4. Update claim status (Notice the change to :claimId)
+router.patch("/:claimId/status", updateClaimStatusController);
 
 export default router;

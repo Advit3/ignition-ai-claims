@@ -1,92 +1,87 @@
-// =============================================================================
-// claim.controller.js — THIN CLAIM CONTROLLER
-// =============================================================================
-// HTTP layer only: validate input, call claim.service, return ApiResponse.
-// No business logic, no DB queries, no external API calls.
-// =============================================================================
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiError } from "../utils/ApiError.js";
+import {
+    submitClaim,
+    getUserClaims,
+    getClaimById,
+    updateClaimStatus,
+} from "../services/claim.service.js";
 
-import { asyncHandler } from '../utils/asyncHandler.js';
-import { ApiResponse } from '../utils/ApiResponse.js';
-import { ApiError } from '../utils/ApiError.js';
-import { HTTP } from '../constants/appConstants.js';
-import * as claimService from '../services/claim.service.js';
-
-// ─── POST /api/v1/claims/submit ─────────────────────────────────────────────
 /**
- * Submit a New Insurance Claim
- *
- * Expects in req.body:
- *   - claim_amount  (number, required)
- *   - claim_type    (string, required — "health" | "car" | "ecommerce")
- *   - description   (string, optional)
- *   - documents     (array of { type, file_url }, optional)
- *
- * The Python ML microservice is called automatically; the STP engine assigns
- * a status. The controller never knows about these details — it's all in the service.
+ * POST /api/v1/claims/submit
  */
-export const submitClaim = asyncHandler(async (req, res) => {
-    const { claim_amount, claim_type, description, documents } = req.body;
+export const submitClaimController = asyncHandler(async (req, res) => {
+    const { claim_type, claim_amount, document_url, description } = req.body;
 
-    // ── Input validation (controller's job) ─────────────────────────────
-    if (!claim_amount || !claim_type) {
-        throw new ApiError(
-            HTTP.BAD_REQUEST,
-            "Both 'claim_amount' and 'claim_type' are required."
-        );
+    if (!claim_type || !claim_amount || !document_url) {
+        throw new ApiError(400, "claim_type, claim_amount, and document_url are required");
     }
 
-    if (typeof claim_amount !== 'number' || claim_amount <= 0) {
-        throw new ApiError(
-            HTTP.BAD_REQUEST,
-            "'claim_amount' must be a positive number."
-        );
-    }
+    const claim = await submitClaim({
+        user_id: req.user.user_id, // Using custom user_id
+        claim_type,
+        claim_amount: Number(claim_amount),
+        document_url,
+        description: description || null,
+    });
 
-    // ── Delegate everything to the service ──────────────────────────────
-    const newClaim = await claimService.submitClaim(
-        { claim_amount, claim_type, description, documents },
-        req.user // Attached by verifyJWT middleware
-    );
-
-    // ── Respond with the created claim ──────────────────────────────────
-    return res.status(HTTP.CREATED).json(
-        new ApiResponse(HTTP.CREATED, newClaim, "Claim submitted and processed successfully.")
-    );
+    return res
+        .status(201)
+        .json(new ApiResponse(201, claim, "Claim submitted successfully"));
 });
 
-// ─── GET /api/v1/claims/my-claims ───────────────────────────────────────────
 /**
- * Get All Claims for the Authenticated User
- *
- * Returns claims sorted by newest first.
+ * GET /api/v1/claims
  */
-export const getMyClaims = asyncHandler(async (req, res) => {
-    const claims = await claimService.getUserClaims(req.user.user_id);
+export const getMyClaimsController = asyncHandler(async (req, res) => {
+    // Pass the custom user_id string for the filter
+    const result = await getUserClaims(req.user.user_id, req.query);
 
-    return res.status(HTTP.OK).json(
-        new ApiResponse(HTTP.OK, {
-            total: claims.length,
-            claims,
-        }, "Claims fetched successfully.")
-    );
+    return res
+        .status(200)
+        .json(new ApiResponse(200, result, "Claims fetched successfully"));
 });
 
-// ─── GET /api/v1/claims/:claimId ────────────────────────────────────────────
 /**
- * Get a Single Claim by its Custom claim_id
- *
- * Enforces ownership: users can only fetch their own claims.
+ * GET /api/v1/claims/:claimId
  */
-export const getClaimById = asyncHandler(async (req, res) => {
-    const { claimId } = req.params;
+export const getClaimByIdController = asyncHandler(async (req, res) => {
+    const { claimId } = req.params; // Matches the route :claimId
 
     if (!claimId) {
-        throw new ApiError(HTTP.BAD_REQUEST, "Claim ID is required.");
+        throw new ApiError(400, "Claim ID parameter is missing.");
     }
 
-    const claim = await claimService.getClaimById(claimId, req.user);
-
-    return res.status(HTTP.OK).json(
-        new ApiResponse(HTTP.OK, claim, "Claim details fetched successfully.")
+    const claim = await getClaimById(
+        claimId,
+        req.user.user_id,
+        req.user.role === "admin"
     );
+
+    return res
+        .status(200)
+        .json(new ApiResponse(200, claim, "Claim fetched successfully"));
+});
+
+/**
+ * PATCH /api/v1/claims/:claimId/status
+ */
+export const updateClaimStatusController = asyncHandler(async (req, res) => {
+    const { claimId } = req.params; // Matches the route :claimId
+    const { status, reason } = req.body;
+
+    if (!status) {
+        throw new ApiError(400, "status is required");
+    }
+
+    const updatedClaim = await updateClaimStatus(
+        claimId,
+        { status, reason },
+        req.user.user_id
+    );
+
+    return res
+        .status(200)
+        .json(new ApiResponse(200, updatedClaim, "Claim status updated successfully"));
 });

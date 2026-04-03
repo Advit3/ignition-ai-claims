@@ -1,8 +1,8 @@
 // =============================================================================
 // auth.service.js — AUTHENTICATION BUSINESS LOGIC
 // =============================================================================
-// "Fat Service" — all Google OAuth verification and user upsert logic lives
-// here. Controllers never touch the DB or third-party APIs directly.
+// "Fat Service" — Google OAuth, JWT signing, refresh token rotation, logout.
+// Controllers never touch the DB or third-party APIs directly.
 // =============================================================================
 
 import crypto from 'crypto';
@@ -10,14 +10,17 @@ import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
 import { User } from '../models/user.model.js';
 import { ApiError } from '../utils/ApiError.js';
+import logger from '../utils/logger.js';
 import {
     HTTP,
     AUTH_CONFIG,
     USER_ROLES,
     USER_CONFIG,
+    ACCESS_TOKEN_EXPIRY,
+    REFRESH_TOKEN_EXPIRY,
 } from '../constants/appConstants.js';
 
-// Initialise the Google OAuth2 client with our Client ID from .env
+// Initialise the Google OAuth2 client
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ─── HELPER: Generate a unique user_id ──────────────────────────────────────
@@ -30,17 +33,41 @@ const generateUserId = () => {
     return `${USER_CONFIG.ID_PREFIX}${hex}`;
 };
 
-// ─── HELPER: Sign a session JWT ─────────────────────────────────────────────
+// ─── HELPER: SHA-256 hash ───────────────────────────────────────────────────
 /**
- * Produces a signed JWT containing the user's `user_id` and `role`.
+ * Hashes a token with SHA-256. Used to store refresh tokens securely.
+ * @param {string} token — raw JWT string
+ * @returns {string} hex-encoded hash
+ */
+const hashToken = (token) => {
+    return crypto.createHash('sha256').update(token).digest('hex');
+};
+
+// ─── HELPER: Sign an access token ───────────────────────────────────────────
+/**
+ * Produces a short-lived access token (15m) containing user_id and role.
  * @param {Object} user — Mongoose user document
  * @returns {string} signed JWT
  */
-const signSessionToken = (user) => {
+const signAccessToken = (user) => {
     return jwt.sign(
-        { user_id: user.user_id, role: user.role },
-        process.env.JWT_SECRET,
-        { expiresIn: AUTH_CONFIG.JWT_EXPIRY }
+        { user_id: user.user_id, _id: user._id, role: user.role },
+        process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET,
+        { expiresIn: ACCESS_TOKEN_EXPIRY }
+    );
+};
+
+// ─── HELPER: Sign a refresh token ───────────────────────────────────────────
+/**
+ * Produces a long-lived refresh token (7d) containing only the user _id.
+ * @param {Object} user — Mongoose user document
+ * @returns {string} signed JWT
+ */
+const signRefreshToken = (user) => {
+    return jwt.sign(
+        { _id: user._id },
+        process.env.REFRESH_TOKEN_SECRET,
+        { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
 };
 
@@ -51,72 +78,138 @@ const signSessionToken = (user) => {
 /**
  * googleLogin — the core "find-or-create" flow.
  *
- * 1. Verify the Google ID token received from the React frontend.
- * 2. Extract the user's profile (name, email, picture) from the payload.
- * 3. Look for an existing user by email.
- *    - Found  → update profile picture (it can change) and return the user.
- *    - Not found → create a new user with a generated user_id and default role.
- * 4. Sign our own session JWT and return it along with the user data.
+ * 1. Verify the Google ID token.
+ * 2. Extract profile (name, email, picture).
+ * 3. Find or create user in MongoDB.
+ * 4. Generate BOTH access and refresh tokens.
+ * 5. Store SHA-256 hash of refresh token in DB.
+ * 6. Return user + both tokens.
  *
- * @param {string} googleToken — the ID token from Google Sign-In on the frontend
- * @returns {{ user: Object, token: string }}
+ * @param {string} googleToken — the ID token from Google Sign-In
+ * @returns {{ user: Object, accessToken: string, refreshToken: string, isNewUser: boolean }}
  */
 export const googleLogin = async (googleToken) => {
-    // ── Step 1: Verify the Google token ─────────────────────────────────
+    // ── Step 1: Verify Google token ─────────────────────────────────────
     let payload;
     try {
         const ticket = await googleClient.verifyIdToken({
-            idToken: googleToken,
+            idToken:  googleToken,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
         payload = ticket.getPayload();
     } catch (error) {
-        throw new ApiError(
-            HTTP.UNAUTHORIZED,
-            "Invalid Google token. Authentication failed."
-        );
+        throw new ApiError(HTTP.UNAUTHORIZED, "Invalid Google token. Authentication failed.");
     }
 
-    // ── Step 2: Extract profile from the verified payload ───────────────
     const { email, name, picture } = payload;
 
     if (!email) {
-        throw new ApiError(
-            HTTP.BAD_REQUEST,
-            "Google account does not have an email address."
-        );
+        throw new ApiError(HTTP.BAD_REQUEST, "Google account does not have an email address.");
     }
 
-    // ── Step 3: Find or Create the user ─────────────────────────────────
+    // ── Step 2: Find or Create user ─────────────────────────────────────
     let user = await User.findOne({ email });
     let isNewUser = false;
 
     if (user) {
-        // Existing user — refresh profile picture (Google can change it)
         user.profile_picture = picture || user.profile_picture;
         await user.save();
     } else {
-        // Brand-new user — create with defaults from constants
         isNewUser = true;
         user = await User.create({
             user_id:         generateUserId(),
             full_name:       name,
-            email:           email,
+            email,
             profile_picture: picture || "",
-            role:            USER_ROLES.POLICYHOLDER,
+            role:            USER_ROLES.USER,
             trust_score:     AUTH_CONFIG.DEFAULT_TRUST_SCORE,
         });
     }
 
-    // ── Step 4: Mint our own JWT ────────────────────────────────────────
-    const token = signSessionToken(user);
+    // ── Step 3: Generate BOTH tokens ────────────────────────────────────
+    const accessToken  = signAccessToken(user);
+    const refreshToken = signRefreshToken(user);
 
-    return { user, token, isNewUser };
+    // ── Step 4: Store refresh token hash in DB ──────────────────────────
+    user.refresh_token = hashToken(refreshToken);
+    await user.save();
+
+    logger.info('User authenticated via Google OAuth', {
+        user_id: user.user_id,
+        is_new:  isNewUser,
+    });
+
+    return { user, accessToken, refreshToken, isNewUser };
 };
 
 /**
- * getCurrentUser — returns the user document already attached by verifyJWT.
- * Exists as a service method for consistency with the Thin Controller pattern.
+ * refreshAccessToken — validates incoming refresh token and rotates both tokens.
+ *
+ * 1. Verify JWT signature of the refresh token.
+ * 2. Find user by decoded _id.
+ * 3. Compare SHA-256 hash of incoming token with stored hash.
+ * 4. If match → generate new access + refresh tokens (rotation).
+ * 5. If mismatch → throw 401 (token reuse detected = potential theft).
+ *
+ * @param {string} incomingRefreshToken — raw refresh token from cookie
+ * @returns {{ accessToken: string, refreshToken: string }}
+ */
+export const refreshAccessToken = async (incomingRefreshToken) => {
+    if (!incomingRefreshToken) {
+        throw new ApiError(HTTP.UNAUTHORIZED, "Refresh token is required.");
+    }
+
+    // ── Verify signature ────────────────────────────────────────────────
+    let decoded;
+    try {
+        decoded = jwt.verify(incomingRefreshToken, process.env.REFRESH_TOKEN_SECRET);
+    } catch (error) {
+        throw new ApiError(HTTP.UNAUTHORIZED, "Invalid or expired refresh token.");
+    }
+
+    // ── Find user (include refresh_token field which is select:false) ───
+    const user = await User.findById(decoded._id).select('+refresh_token');
+
+    if (!user) {
+        throw new ApiError(HTTP.UNAUTHORIZED, "User not found. Token invalid.");
+    }
+
+    // ── Compare hashes ──────────────────────────────────────────────────
+    const incomingHash = hashToken(incomingRefreshToken);
+    if (user.refresh_token !== incomingHash) {
+        // Potential token theft — invalidate all sessions
+        user.refresh_token = null;
+        await user.save();
+        logger.warn('Refresh token reuse detected — all sessions invalidated', {
+            user_id: user.user_id,
+        });
+        throw new ApiError(HTTP.UNAUTHORIZED, "Invalid or expired refresh token.");
+    }
+
+    // ── Rotate tokens ───────────────────────────────────────────────────
+    const newAccessToken  = signAccessToken(user);
+    const newRefreshToken = signRefreshToken(user);
+
+    user.refresh_token = hashToken(newRefreshToken);
+    await user.save();
+
+    logger.info('Access token refreshed', { user_id: user.user_id });
+
+    return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+};
+
+/**
+ * logoutUser — invalidates the refresh token by clearing it from DB.
+ *
+ * @param {string} userId — MongoDB _id of the user
+ */
+export const logoutUser = async (userId) => {
+    await User.findByIdAndUpdate(userId, { refresh_token: null });
+    logger.info('User logged out', { userId });
+};
+
+/**
+ * getCurrentUser — returns the user document by custom user_id.
  *
  * @param {string} userId — the custom user_id from req.user
  * @returns {Object} Mongoose user document

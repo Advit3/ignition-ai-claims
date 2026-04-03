@@ -1,97 +1,115 @@
 // =============================================================================
 // app.js — EXPRESS APPLICATION SETUP
 // =============================================================================
-// This is the Express application instance. It configures:
-//   1. Global middlewares (CORS, JSON parsing, static files)
-//   2. API route mounting (versioned under /api/v1/*)
-//   3. Global error handler (must be LAST)
+// Configures the middleware stack, route mounting, and error handling.
+// Order matters: security → parsing → request ID → logging → rate limiting →
+//                routes → 404 → global error handler
 // =============================================================================
 
-import express from 'express';
-import cors from 'cors';
-import { ApiError } from './utils/ApiError.js';
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import cookieParser from "cookie-parser";
+import { ApiError } from "./utils/ApiError.js";
+import { ApiResponse } from "./utils/ApiResponse.js";
+import logger, { morganMiddleware } from "./utils/logger.js";
+import { attachRequestId } from "./middlewares/requestId.middleware.js";
+import { generalLimiter, authLimiter } from "./middlewares/rateLimiter.middleware.js";
+import { verifyJWT, isAdmin } from "./middlewares/auth.middleware.js";
 
 const app = express();
 
 // ==========================================
-// 1. GLOBAL MIDDLEWARES
+// 1. SECURITY & PARSING MIDDLEWARES
 // ==========================================
 
-// Enable CORS so the React frontend can communicate with this API
+// Helmet — sets security-related HTTP headers
+app.use(helmet());
+
+// CORS — allow React frontend to communicate
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || '*', // In production, lock to your React app's URL
-    credentials: true
+  origin:      process.env.CORS_ORIGIN || "*",
+  credentials: true,
 }));
 
-// Parse incoming JSON payloads (with a limit to prevent payload-too-large attacks)
-app.use(express.json({ limit: "16kb" }));
+// Parse JSON payloads (10kb limit to prevent DoS)
+app.use(express.json({ limit: "10kb" }));
 
-// Parse URL-encoded data (data sent via standard HTML forms)
-app.use(express.urlencoded({ extended: true, limit: "16kb" }));
+// Parse URL-encoded data
+app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 
-// Serve static files from the 'public' directory
+// Parse cookies (needed for refresh token flow)
+app.use(cookieParser());
+
+// Serve static files
 app.use(express.static("public"));
 
+// ==========================================
+// 2. REQUEST TRACKING & LOGGING
+// ==========================================
+
+// Attach unique request ID to every request
+app.use(attachRequestId);
+
+// HTTP access logs piped through Winston
+app.use(morganMiddleware);
 
 // ==========================================
-// 2. ROUTE IMPORTS & MOUNTING
+// 3. RATE LIMITING
 // ==========================================
 
-// ── Auth routes (Sprint 2) ──────────────────────────────────────────────────
-import authRouter from './routes/auth.routes.js';
-app.use("/api/v1/auth", authRouter);
-
-// ── Claim routes (Sprint 3) ─────────────────────────────────────────────────
-import claimRouter from './routes/claim.routes.js';
-app.use("/api/v1/claims", claimRouter);
-
-// ── Admin routes (Sprint 4) ─────────────────────────────────────────────────
-import adminRouter from './routes/admin.routes.js';
-app.use("/api/v1/admin", adminRouter);
-
-import healthcheckRouter from "./routes/healthcheck.routes.js";
-app.use("/api/v1/healthcheck", healthcheckRouter);
+// General rate limiter on all routes
+app.use(generalLimiter);
 
 // ==========================================
-// 3. HEALTH CHECK
+// 4. ROUTE IMPORTS & MOUNTING
 // ==========================================
-// Simple endpoint to verify the server is alive (used by load balancers / monitoring)
-app.get("/api/v1/health", (_req, res) => {
-    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+
+// Health check (no auth, no rate limit on /health itself)
+import healthRoutes from "./routes/health.routes.js";
+app.use("/health", healthRoutes);
+
+// Auth routes (stricter rate limiting)
+import authRouter from "./routes/auth.routes.js";
+app.use("/api/v1/auth", authLimiter, authRouter);
+
+// Claim routes — any logged-in user (verifyJWT applied HERE, not in routes file)
+import claimRoutes from "./routes/claim.routes.js";
+app.use("/api/v1/claims", verifyJWT, claimRoutes);
+
+// Notification routes (protected by JWT inside the router)
+import notificationRoutes from "./routes/notification.routes.js";
+app.use("/api/v1/notifications", notificationRoutes);
+
+// Analytics routes — admins only (verifyJWT + isAdmin applied HERE)
+import analyticsRoutes from "./routes/analytics.routes.js";
+app.use("/api/v1/admin/analytics", verifyJWT, isAdmin, analyticsRoutes);
+
+// ==========================================
+// 5. 404 HANDLER
+// ==========================================
+app.use((req, _res, next) => {
+  next(new ApiError(404, `Route ${req.originalUrl} not found`));
 });
 
-
 // ==========================================
-// 4. GLOBAL ERROR HANDLER
+// 6. GLOBAL ERROR HANDLER
 // ==========================================
-// This MUST be the last middleware. It catches any errors thrown by asyncHandlers.
-app.use((err, req, res, next) => {
-    let error = err;
+// Must be the LAST middleware. Catches all errors from asyncHandlers.
+app.use((err, req, res, _next) => {
+  const statusCode = err.statusCode || 500;
+  const message    = err.message || "Internal Server Error";
 
-    // If the error isn't already our custom ApiError, convert it
-    if (!(error instanceof ApiError)) {
-        const statusCode = error.statusCode || 500;
-        const message = error.message || "Internal Server Error";
-        error = new ApiError(statusCode, message, error?.errors || [], err.stack);
-    }
+  // Log with Winston
+  logger.error(message, {
+    stack:     err.stack,
+    requestId: req.requestId,
+    statusCode,
+  });
 
-    // Format the final JSON response sent to the frontend
-    const response = {
-        success: error.success,
-        statusCode: error.statusCode,
-        message: error.message,
-        errors: error.errors,
-        // Only expose the stack trace in development mode
-        ...(process.env.NODE_ENV === "development" && { stack: error.stack })
-    };
-
-    return res.status(error.statusCode).json(response);
+  return res.status(statusCode).json(
+    new ApiResponse(statusCode, null, message)
+  );
 });
 
-
-
-// ... existing middlewares (cors, json, etc.)
-
-
-// ... rest of the file
 export { app };
