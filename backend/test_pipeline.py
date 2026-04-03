@@ -4,6 +4,7 @@ from app.services.fraud_service import (
     calculate_trust_score,
     compute_final_risk
 )
+from app.services.decision_service import make_decision
 from datetime import datetime, timedelta
 
 print("\n===== FULL PIPELINE TEST =====\n")
@@ -92,6 +93,9 @@ for case in test_cases:
     print("Trust Score:", round(trust, 3))
 
     final = compute_final_risk(fraud_prob, trust)
+    decision_output = make_decision(final, trust, fraud_prob)
     print("Final Risk Score:", round(final, 3))
+    print("Decision:", decision_output["decision"])
+    print("Reason:", decision_output["reason"])
 
     print()
