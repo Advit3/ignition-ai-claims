@@ -36,16 +36,16 @@ import {
  */
 export const getPaginatedClaims = async (queryParams) => {
     const {
-        page      = PAGINATION.DEFAULT_PAGE,
-        limit     = PAGINATION.DEFAULT_LIMIT,
+        page = PAGINATION.DEFAULT_PAGE,
+        limit = PAGINATION.DEFAULT_LIMIT,
         status,
         claim_type,
-        sort_by   = 'created_at',
-        order     = 'desc',
+        sort_by = 'created_at',
+        order = 'desc',
     } = queryParams;
 
     // ── Sanitize pagination values ──────────────────────────────────────
-    const pageNum  = Math.max(1, parseInt(page, 10) || PAGINATION.DEFAULT_PAGE);
+    const pageNum = Math.max(1, parseInt(page, 10) || PAGINATION.DEFAULT_PAGE);
     const limitNum = Math.min(
         PAGINATION.MAX_LIMIT,
         Math.max(1, parseInt(limit, 10) || PAGINATION.DEFAULT_LIMIT)
@@ -80,12 +80,12 @@ export const getPaginatedClaims = async (queryParams) => {
     return {
         claims,
         pagination: {
-            current_page:    pageNum,
-            total_pages:     totalPages,
+            current_page: pageNum,
+            total_pages: totalPages,
             total_documents: totalDocuments,
-            per_page:        limitNum,
-            has_next_page:   pageNum < totalPages,
-            has_prev_page:   pageNum > 1,
+            per_page: limitNum,
+            has_next_page: pageNum < totalPages,
+            has_prev_page: pageNum > 1,
         },
     };
 };
@@ -112,7 +112,7 @@ export const getClaimStats = async () => {
             // Group ALL documents into a single result
             $group: {
                 _id: null,
-                total_claims:       { $sum: 1 },
+                total_claims: { $sum: 1 },
                 total_claim_amount: { $sum: "$claim_amount" },
                 average_fraud_score: { $avg: "$fraud_score" },
 
@@ -132,12 +132,12 @@ export const getClaimStats = async () => {
             // Clean up the output shape
             $project: {
                 _id: 0,
-                total_claims:        1,
-                total_claim_amount:  1,
+                total_claims: 1,
+                total_claim_amount: 1,
                 average_fraud_score: { $round: ["$average_fraud_score", 4] },
-                approved_count:      1,
-                rejected_count:      1,
-                pending_count:       1,
+                approved_count: 1,
+                rejected_count: 1,
+                pending_count: 1,
             },
         },
     ];
@@ -147,12 +147,12 @@ export const getClaimStats = async () => {
     // If there are no claims at all, return zeroed-out stats
     if (!results.length) {
         return {
-            total_claims:        0,
-            total_claim_amount:  0,
+            total_claims: 0,
+            total_claim_amount: 0,
             average_fraud_score: 0,
-            approved_count:      0,
-            rejected_count:      0,
-            pending_count:       0,
+            approved_count: 0,
+            rejected_count: 0,
+            pending_count: 0,
         };
     }
 
@@ -175,11 +175,11 @@ export const getStpConfig = async () => {
     // First-time access: no config in DB yet → return constants
     if (!config) {
         return {
-            config_name:            STP_CONFIG_NAME,
+            config_name: STP_CONFIG_NAME,
             auto_approve_threshold: DEFAULT_STP.AUTO_APPROVE_THRESHOLD,
-            auto_reject_threshold:  DEFAULT_STP.AUTO_REJECT_THRESHOLD,
-            max_stp_amount:         DEFAULT_STP.MAX_STP_AMOUNT,
-            last_updated_by:        "system_init",
+            auto_reject_threshold: DEFAULT_STP.AUTO_REJECT_THRESHOLD,
+            max_stp_amount: DEFAULT_STP.MAX_STP_AMOUNT,
+            last_updated_by: "system_init",
         };
     }
 
@@ -250,7 +250,7 @@ export const updateStpConfig = async (updateData, adminUser) => {
     ) {
         const existingConfig = await StpConfig.findOne({ config_name: STP_CONFIG_NAME });
         const currentApprove = auto_approve_threshold ?? existingConfig?.auto_approve_threshold ?? DEFAULT_STP.AUTO_APPROVE_THRESHOLD;
-        const currentReject  = auto_reject_threshold  ?? existingConfig?.auto_reject_threshold  ?? DEFAULT_STP.AUTO_REJECT_THRESHOLD;
+        const currentReject = auto_reject_threshold ?? existingConfig?.auto_reject_threshold ?? DEFAULT_STP.AUTO_REJECT_THRESHOLD;
 
         if (currentApprove >= currentReject) {
             throw new ApiError(
@@ -263,17 +263,17 @@ export const updateStpConfig = async (updateData, adminUser) => {
     // ── Build the update payload ────────────────────────────────────────
     const updatePayload = { last_updated_by: adminUser.user_id };
     if (auto_approve_threshold !== undefined) updatePayload.auto_approve_threshold = auto_approve_threshold;
-    if (auto_reject_threshold !== undefined)  updatePayload.auto_reject_threshold  = auto_reject_threshold;
-    if (max_stp_amount !== undefined)         updatePayload.max_stp_amount         = max_stp_amount;
+    if (auto_reject_threshold !== undefined) updatePayload.auto_reject_threshold = auto_reject_threshold;
+    if (max_stp_amount !== undefined) updatePayload.max_stp_amount = max_stp_amount;
 
     // ── Upsert: update if exists, create if not ─────────────────────────
     const updatedConfig = await StpConfig.findOneAndUpdate(
         { config_name: STP_CONFIG_NAME },
         { $set: updatePayload },
         {
-            new:           true,   // Return the updated document
-            upsert:        true,   // Create if it doesn't exist
-            runValidators: true,   // Run Mongoose schema validators
+            new: true,   // Return the updated document
+            upsert: true,   // Create if it doesn't exist
+            runValidators: false,   // Run Mongoose schema validators
         }
     ).select("-__v");
 

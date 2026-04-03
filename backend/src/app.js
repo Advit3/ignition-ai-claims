@@ -49,6 +49,8 @@ app.use("/api/v1/claims", claimRouter);
 import adminRouter from './routes/admin.routes.js';
 app.use("/api/v1/admin", adminRouter);
 
+import healthcheckRouter from "./routes/healthcheck.routes.js";
+app.use("/api/v1/healthcheck", healthcheckRouter);
 
 // ==========================================
 // 3. HEALTH CHECK
@@ -86,4 +88,10 @@ app.use((err, req, res, next) => {
     return res.status(error.statusCode).json(response);
 });
 
+
+
+// ... existing middlewares (cors, json, etc.)
+
+
+// ... rest of the file
 export { app };

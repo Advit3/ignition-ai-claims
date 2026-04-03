@@ -14,7 +14,7 @@ export const STP_CONFIG_NAME = "global_stp_rules";
 
 // ─── CLAIM STATUSES (maps 1:1 with the Mongoose enum) ───────────────────────
 export const CLAIM_STATUS = Object.freeze({
-    PENDING:  "pending",
+    PENDING: "pending",
     APPROVED: "approved",
     REJECTED: "rejected",
 });
@@ -22,13 +22,13 @@ export const CLAIM_STATUS = Object.freeze({
 // ─── USER ROLES ──────────────────────────────────────────────────────────────
 export const USER_ROLES = Object.freeze({
     POLICYHOLDER: "policyholder",
-    ADMIN:        "admin",
+    ADMIN: "admin",
 });
 
 // ─── CLAIM ID GENERATION ─────────────────────────────────────────────────────
 export const CLAIM_CONFIG = Object.freeze({
     /** Prefix prepended to every generated claim_id (e.g., "CLM-a1b2c3") */
-    ID_PREFIX:      "CLM-",
+    ID_PREFIX: "CLM-",
     /** Number of random bytes — 3 bytes → 6-char hex string */
     ID_BYTE_LENGTH: 3,
     /** Fallback document type when the frontend doesn't specify one */
@@ -60,38 +60,38 @@ export const AUTH_CONFIG = Object.freeze({
 // Used only for seeding / fallback when no StpConfig document exists yet.
 export const DEFAULT_STP = Object.freeze({
     AUTO_APPROVE_THRESHOLD: 0.20,
-    AUTO_REJECT_THRESHOLD:  0.85,
-    MAX_STP_AMOUNT:         50_000,
+    AUTO_REJECT_THRESHOLD: 0.85,
+    MAX_STP_AMOUNT: 50_000,
 });
 
 // ─── PAGINATION ──────────────────────────────────────────────────────────────
 export const PAGINATION = Object.freeze({
     /** Default page number when the client doesn't specify */
-    DEFAULT_PAGE:  1,
+    DEFAULT_PAGE: 1,
     /** Default number of documents per page */
     DEFAULT_LIMIT: 10,
     /** Absolute ceiling to prevent abuse */
-    MAX_LIMIT:     100,
+    MAX_LIMIT: 100,
 });
 
 // ─── HTTP STATUS CODES (used project-wide for clarity) ──────────────────────
 export const HTTP = Object.freeze({
-    OK:                  200,
-    CREATED:             201,
-    BAD_REQUEST:         400,
-    UNAUTHORIZED:        401,
-    FORBIDDEN:           403,
-    NOT_FOUND:           404,
-    CONFLICT:            409,
-    UNPROCESSABLE:       422,
-    INTERNAL_SERVER:     500,
+    OK: 200,
+    CREATED: 201,
+    BAD_REQUEST: 400,
+    UNAUTHORIZED: 401,
+    FORBIDDEN: 403,
+    NOT_FOUND: 404,
+    CONFLICT: 409,
+    UNPROCESSABLE: 422,
+    INTERNAL_SERVER: 500,
     SERVICE_UNAVAILABLE: 503,
 });
 
 // ─── USER ID GENERATION ─────────────────────────────────────────────────────
 export const USER_CONFIG = Object.freeze({
     /** Prefix for auto-generated user_id values (e.g., "USR-f4e2a1") */
-    ID_PREFIX:      "USR-",
+    ID_PREFIX: "USR-",
     /** Number of random bytes — 4 bytes → 8-char hex string */
     ID_BYTE_LENGTH: 4,
 });
