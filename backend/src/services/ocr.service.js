@@ -19,24 +19,40 @@ const runPythonOCR = (filePath) => {
         let errorOutput = "";
 
         pythonProcess.stdout.on("data", (data) => {
+            console.log(`[PYTHON STDOUT]: ${data.toString()}`);
             output += data.toString();
         });
 
         pythonProcess.stderr.on("data", (data) => {
+            console.error(`[PYTHON STDERR]: ${data.toString()}`);
             errorOutput += data.toString();
         });
 
         pythonProcess.on("close", (code) => {
+            console.log(`[TRACE] 6. Python bridge closed with exit code: ${code}`);
             if (code !== 0) {
                 console.error("Python Script Error Output:", errorOutput);
                 return resolve({ error: "Python OCR script failed to execute" });
             }
             try {
-                const parsed = JSON.parse(output.trim());
+                console.log("[TRACE] 7. Attempting to parse JSON at line 128...");
+                // Parse exactly the last line to prevent printed warnings from corrupting the JSON
+                const lines = output.trim().split('\n');
+                const finalJson = lines[lines.length - 1];
+                
+                const parsed = JSON.parse(finalJson);
                 resolve(parsed);
             } catch (e) {
-                console.error("JSON Parse Error from Python:", output);
-                resolve({ error: "Failed to parse OCR result" });
+                console.error('[DETAILED ERROR]', e.stack || e);
+                console.error("====== FATAL JSON PARSE ERROR FROM PYTHON ======");
+                console.error("RAW OUTPUT:", output);
+                console.error("error code:", e.message);
+                console.error("==========================================");
+                // Cleanly fallback with explicit error so claim.service.js can handle it without 500ing
+                resolve({ 
+                    error: "Failed to parse OCR result",
+                    raw_text: ""
+                });
             }
         });
     });

@@ -1,13 +1,6 @@
 // =============================================================================
 // claim.service.js — CORE CLAIM PROCESSING ENGINE
 // =============================================================================
-// "Fat Service" — the complete intelligent claims pipeline:
-//   1. THE EYES  → OCR Service (Gemini Vision) extracts document data
-//   2. THE BRAIN → Fraud Service (feature engineering + trust scoring)
-//   3. THE JUDGE → STP Rules Engine (approve / reject / escalate)
-//   4. THE RECORD → MongoDB persistence
-// No external HTTP calls for ML logic — all services are native Node.js.
-// =============================================================================
 
 import crypto from "crypto";
 import { Claim } from "../models/claim.model.js";
@@ -21,361 +14,155 @@ import {
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
 } from "../constants/appConstants.js";
-
-// ─── INTEGRATED SERVICE IMPORTS ─────────────────────────────────────────────
 import { extractClaimDataFromUrl } from "./ocr.service.js";
-import {
-    buildFeatures,
-    predictFraud,
-    calculateTrustScore,
-    computeFinalRisk,
-} from "./fraud.service.js";
-import { makeDecision } from "./decision.service.js";
 
-// ─── HELPER: Generate unique claim_id ───────────────────────────────────────
-/**
- * Generates a unique claim identifier like "CLM-a1b2c3".
- * @returns {string}
- */
 const generateClaimId = () => {
     const hex = crypto.randomBytes(CLAIM_CONFIG.ID_BYTE_LENGTH).toString("hex");
     return `${CLAIM_CONFIG.ID_PREFIX}${hex}`;
 };
 
-// =============================================================================
-// PUBLIC SERVICE METHODS
-// =============================================================================
-
-/**
- * submitClaim — orchestrates the full intelligent claim processing pipeline.
- *
- * Execution sequence:
- *   1. INITIALIZATION → Generate IDs, extract input fields
- *   2. THE EYES       → OCR extracts data from the document image
- *   3. THE BRAIN      → Fraud feature engineering + ML prediction + trust scoring
- *   4. THE JUDGE      → STP rules engine determines claim_status
- *   5. THE RECORD     → Persist everything to MongoDB
- *
- * @param {Object} claimData — { user_id, claim_type, claim_amount, document_url, description }
- * @returns {Object} saved Claim document
- */
 export const submitClaim = async (claimData) => {
+    console.log("[TRACE] 3. Starting submitClaim service...");
     try {
-        // =========================================================================
-        // STEP 1: INITIALIZATION
-        // =========================================================================
-        console.log("[TRACE - 1. INITIAL INPUT]", claimData);
-
         const { user_id, claim_type, claim_amount, document_url, description } = claimData;
         const claim_id = generateClaimId();
         const requestId = crypto.randomUUID();
 
-        logger.info("Pipeline Stage 1/5: INITIALIZATION", {
-            claim_id,
-            user_id,
-            claim_type,
-            claim_amount,
-            requestId,
-        });
-
-        // =========================================================================
-        // STEP 2: THE "EYES" — OCR Service (Gemini Vision)
-        // =========================================================================
-        // Wrapped in try/catch so a bad image never crashes the pipeline.
-        // If OCR fails, we continue with defaults — the claim still gets processed.
+        // 1. OCR Extraction (Gemini)
         let ocrResult = null;
         try {
-            logger.info("Pipeline Stage 2/5: THE EYES — calling OCR service", { claim_id });
+            console.log("[TRACE] 4. Cloudinary processing verified. Upload already initiated/completed via frontend bridge.");
+            console.log(`[TRACE] 5. Handing off to Python OCR Bridge at ${new Date().toLocaleTimeString()}`);
             ocrResult = await extractClaimDataFromUrl(document_url);
-
-            // 🔍 DEBUG: Log the full parsed OCR result immediately
-            logger.info("Parsed OCR Result:", ocrResult);
-
-            logger.info("Pipeline Stage 2/5: THE EYES — OCR complete", {
-                claim_id,
-                ocr_success: !!ocrResult,
-                extracted_amount: ocrResult?.total_amount ?? "N/A",
-                provider: ocrResult?.provider_name ?? "N/A",
-            });
         } catch (ocrError) {
-            logger.warn("Pipeline Stage 2/5: THE EYES — OCR failed, continuing with defaults", {
-                claim_id,
-                error: ocrError.message,
-                stack: ocrError.stack,
-            });
-            ocrResult = null;
+            logger.warn("Pipeline Stage 2/5: THE EYES — OCR failed", { error: ocrError.message });
         }
 
-        // ── Calculate Doc Match Score based on OCR findings ──────────────────
-        console.log("[TRACE - 2. BEFORE COMPARISON]", {
-            typeof_claim_amount: typeof claim_amount,
-            typeof_ocr_total_amount: ocrResult ? typeof ocrResult.total_amount : "undefined"
-        });
+        // 2. Document Validation & Classification logic (as per prompt specifications)
+        const categories = {
+            health: ["hospital", "doctor", "patient", "treatment", "diagnosis", "prescription", "medicine", "bill"],
+            auto: ["vehicle", "car", "bike", "bus", "engine", "garage", "repair", "accident"],
+            gadget: ["mobile", "phone", "tv", "screen", "device", "warranty", "invoice", "model"]
+        };
 
-        let docMatchScore = 0.5; // Default middle-ground
+        const scores = { health: 0, auto: 0, gadget: 0 };
+        const text = (ocrResult?.raw_text || JSON.stringify(ocrResult) || "").toLowerCase();
 
-        if (ocrResult && ocrResult.total_amount !== null && ocrResult.total_amount !== undefined) {
-            // Safe comparison using parseFloat — handles strings, NaN, etc.
-            const ocrAmount = parseFloat(ocrResult.total_amount);
-            const userAmount = parseFloat(claim_amount);
-
-            if (!isNaN(ocrAmount) && !isNaN(userAmount)) {
-                if (userAmount === ocrAmount) {
-                    docMatchScore = 1.0; // Perfect match — high trust
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Amounts matched exactly" });
-                    logger.info("Calculated docMatchScore: 1.0 (PERFECT MATCH)", {
-                        claim_id, ocr_amount: ocrAmount, user_amount: userAmount,
-                    });
-                } else if (userAmount < ocrAmount) {
-                    // ✅ NEW RULE: Under-claiming is safe (partial claim / deductible)
-                    docMatchScore = 0.8;
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Valid under-claim / partial claim" });
-                    logger.info(`Calculated docMatchScore: 0.8 (PARTIAL CLAIM) on ${claim_id}: User claimed ${userAmount} for bill of ${ocrAmount}`);
-                } else {
-                    // 🚨 FRAUD RULE: Over-claiming (Liar!)
-                    docMatchScore = 0.1; // Amount mismatch — high fraud risk
-                    console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Amount mismatch detected (Over-claim)" });
-                    logger.warn(`Calculated docMatchScore: 0.1 (OVER-CLAIM) on ${claim_id}! User claimed ${userAmount}, OCR found ${ocrAmount}`);
+        for (let category in categories) {
+            for (let word of categories[category]) {
+                if (text.includes(word)) {
+                    scores[category] += 1;
                 }
-            } else {
-                // Failsafe in case Gemini returns weird text that parseFloat turns into NaN
-                docMatchScore = 0.5;
-                console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Could not parse amounts to valid numbers" });
-                logger.warn("Calculated docMatchScore: 0.5 (PARSE FAILED)", { claim_id, ocr_amount: ocrResult.total_amount, user_amount: claim_amount });
             }
-        } else {
-            console.log("[TRACE - 3. DOC MATCH RESULT]", { score: docMatchScore, reason: "Default - No OCR amount available" });
-            logger.info("Calculated docMatchScore: 0.5 (DEFAULT — no OCR amount available)", {
-                claim_id,
-            });
         }
 
-        // =========================================================================
-        // STEP 3: THE "BRAIN" — Fraud Service (Feature Engineering + ML)
-        // =========================================================================
-        logger.info("Pipeline Stage 3/5: THE BRAIN — running fraud analysis", { claim_id });
+        let detectedType = Object.keys(scores).reduce((a, b) => scores[a] > scores[b] ? a : b);
+        const totalScore = scores.health + scores.auto + scores.gadget;
+        const confidence = totalScore === 0 ? 0 : scores[detectedType] / totalScore;
 
-        /**
-         * Fetch real user claim history from MongoDB for fraud feature engineering.
-         * Uses aggregation pipeline for performance — one DB call instead of multiple.
-         */
-        const userHistory = await (async () => {
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        // If no scores matched, fallback safely
+        if (totalScore === 0) detectedType = "unknown";
 
-          const [stats] = await Claim.aggregate([
-            { $match: { user_id: String(user_id) } },
-            {
-              $group: {
-                _id: null,
-                total_claims:     { $sum: 1 },
-                fraud_count:      { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
-                rejected_claims:  { $sum: { $cond: [{ $eq: ["$claim_status", CLAIM_STATUS.REJECTED] }, 1, 0] } },
-                avg_claim_amount: { $avg: "$claim_amount" },
-                last_claim_date:  { $max: "$created_at" },
-              },
-            },
-          ]);
+        let status, dbStatus, risk;
+        let reasons = [];
+        let paymentStatus = "pending";
 
-          // If no history found — this is their first claim, use clean defaults
-          if (!stats) {
-            return {
-              total_claims:     0,
-              fraud_count:      0,
-              rejected_claims:  0,
-              past_claims:      0,
-              avg_claim_amount: claim_amount, // use current amount as baseline
-              last_claim_days:  999,          // no prior claims
-            };
-          }
+        const expectedClaimType = String(claim_type).toLowerCase().replace(' insurance', '');
 
-          // Calculate days since last claim
-          const lastClaimDays = stats.last_claim_date
-            ? Math.floor((Date.now() - new Date(stats.last_claim_date)) / (1000 * 60 * 60 * 24))
-            : 999;
+        // Safely catch OCR parser errors from the bridge
+        if (ocrResult && ocrResult.error) {
+            console.warn('AI Quota Hit - Falling back to Manual Review');
+            status = "flagged";
+            dbStatus = CLAIM_STATUS.ESCALATED; // Escalated maps to manual review
+            risk = "Medium";
+            reasons.push("OCR Engine Failed - Manual verification required");
+            detectedType = claim_type; // Fallback to user type to avoid UI breaks
+            ocrResult = {}; // Reset to empty OCR object per instructions
+        } else if (detectedType !== expectedClaimType && detectedType !== "unknown") {
+            status = "flagged";
+            dbStatus = CLAIM_STATUS.ESCALATED; // Map to enum
+            risk = "High";
+            reasons.push("Document type mismatch");
+        } else if (confidence < 0.6 || totalScore === 0) {
+            status = "flagged"; // Manual review state
+            dbStatus = CLAIM_STATUS.ESCALATED;
+            risk = "Medium";
+            if (totalScore === 0) reasons.push("No classification keywords detected");
+            else reasons.push("Low confidence score");
+        } else {
+            status = "approved";
+            dbStatus = CLAIM_STATUS.APPROVED;
+            risk = "Low";
+            paymentStatus = "initiated";
+        }
 
-          return {
-            total_claims:     stats.total_claims,
-            fraud_count:      stats.fraud_count,
-            rejected_claims:  stats.rejected_claims,
-            past_claims:      stats.total_claims,
-            avg_claim_amount: Math.round(stats.avg_claim_amount || claim_amount),
-            last_claim_days:  lastClaimDays,
-          };
-        })();
-
-        // Build the ML feature vector
-        const features = buildFeatures(
-            {
-                claim_amount,
-                bill_date: ocrResult?.date_of_service || new Date().toISOString(),
-                doc_match_score: docMatchScore,
-            },
-            userHistory
-        );
-
-        // Execute the full ML pipeline
-        const rawFraudProbability = predictFraud(features);
-        const trustScore = calculateTrustScore(userHistory);
-        const finalFraudScore = computeFinalRisk(rawFraudProbability, trustScore);
-
-        logger.info("Pipeline Stage 3/5: THE BRAIN — analysis complete", {
-            claim_id,
-            features,
-            raw_fraud_probability: rawFraudProbability,
-            trust_score: trustScore,
-            final_fraud_score: finalFraudScore,
-        });
-
-        // =========================================================================
-        // STEP 4: THE "JUDGE" — STP Decision Engine
-        // =========================================================================
-        logger.info("Pipeline Stage 4/5: THE JUDGE — evaluating decision matrix", { claim_id });
-
-        const decision = makeDecision(finalFraudScore, trustScore, rawFraudProbability);
-        const { status: claimStatus, reason } = decision;
-
-        logger.info("Pipeline Stage 4/5: THE JUDGE — verdict rendered", {
-            claim_id,
-            claim_status: claimStatus,
-            stp_reason: reason,
-            final_fraud_score: finalFraudScore,
-        });
-
-        // =========================================================================
-        // STEP 5: THE RECORD — Persist to Database
-        // =========================================================================
-        logger.info("Pipeline Stage 5/5: THE RECORD — saving to database", { claim_id });
-
+        // 3. Database Persistence
         const dbPayload = {
             claim_id,
             user_id,
             claim_amount,
-            claim_type,
-            document_url,
+            claim_type: expectedClaimType, // Enforce correct enum representation
+            document_url, // For compatibility check
             description,
-            fraud_score: finalFraudScore,
-            claim_status: claimStatus,
-            status_reason: reason,
+            claim_status: dbStatus,
             ocr_data: ocrResult || {},
-            doc_match: docMatchScore,
+            doc_match: confidence,
             ml_request_id: requestId,
+            detected_type: detectedType,
+            reasons: reasons,
+            risk_level: risk,
+            payment_status: paymentStatus
         };
-
-        console.log("[TRACE - 8. FINAL DB PAYLOAD]", dbPayload);
 
         const newClaim = await Claim.create(dbPayload);
 
-        logger.info("Pipeline COMPLETE — claim processed successfully", {
-            claim_id,
-            claim_status: claimStatus,
-            fraud_score: finalFraudScore,
-            doc_match: docMatchScore,
-            requestId,
-        });
-
-        return newClaim;
+        // 4. Mapped Mandatory Backend Response
+        return {
+            detectedType: detectedType,
+            claimType: expectedClaimType,
+            confidence: Number(confidence.toFixed(2)),
+            risk: risk.toLowerCase(),
+            status: status,
+            reasons: reasons,
+            paymentStatus: paymentStatus
+        };
 
     } catch (error) {
-        logger.error("FATAL PIPELINE CRASH:", error.stack);
+        console.error('[DETAILED ERROR]', error.stack || error);
         throw new ApiError(500, "An internal error occurred during claim processing.");
     }
 };
 
-/**
- * Fetches a paginated list of claims belonging to a specific user.
- *
- * @param {string} userId - The string user_id of the logged-in user
- * @param {object} queryParams - { page, limit, status } from req.query
- * @returns {object} { claims, total, page, limit, total_pages }
- */
 export const getUserClaims = async (userId, queryParams = {}) => {
+    // Left unchanged for list compatibility
     const page = Math.max(1, parseInt(queryParams.page) || DEFAULT_PAGE);
-    const limit = Math.min(
-        MAX_PAGE_SIZE,
-        Math.max(1, parseInt(queryParams.limit) || DEFAULT_PAGE_SIZE)
-    );
+    const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, parseInt(queryParams.limit) || DEFAULT_PAGE_SIZE));
     const skip = (page - 1) * limit;
 
     const query = { user_id: userId };
-
     if (queryParams.status && Object.values(CLAIM_STATUS).includes(queryParams.status)) {
         query.claim_status = queryParams.status;
     }
 
     const [total, claims] = await Promise.all([
         Claim.countDocuments(query),
-        Claim.find(query)
-            .sort({ created_at: -1 })
-            .skip(skip)
-            .limit(limit)
-            .select("-ml_raw_response")
-            .lean(),
+        Claim.find(query).sort({ created_at: -1 }).skip(skip).limit(limit).select("-ml_raw_response").lean(),
     ]);
 
-    return {
-        claims,
-        total,
-        page,
-        limit,
-        total_pages: Math.ceil(total / limit),
-    };
+    return { claims, total, page, limit, total_pages: Math.ceil(total / limit) };
 };
 
-/**
- * Fetches a single claim by its custom claim_id.
- * Enforces ownership — a regular user can only see their own claim.
- *
- * @param {string} claimId  - The claim's custom ID (e.g., "CLM-123")
- * @param {string} userId   - The logged-in user's custom user_id string
- * @param {boolean} isAdmin - If true, skip ownership check
- * @returns {object} The claim document
- */
 export const getClaimById = async (claimId, userId, isAdmin = false) => {
     const query = isAdmin ? { claim_id: claimId } : { claim_id: claimId, user_id: userId };
     const claim = await Claim.findOne(query).lean();
-
-    if (!claim) {
-        throw new ApiError(404, "Claim not found");
-    }
-
+    if (!claim) throw new ApiError(404, "Claim not found");
     return claim;
 };
 
-/**
- * Updates the status of a claim.
- * Enforces the state machine — only allowed transitions proceed.
- *
- * @param {string} claimId - The claim's custom claim_id
- * @param {object} payload - { status, reason }
- * @param {string} actorId - Custom user_id of the user making the change
- * @returns {object} The updated claim document
- */
 export const updateClaimStatus = async (claimId, payload, actorId) => {
     const { status: newStatus, reason } = payload;
-
     const claim = await Claim.findOne({ claim_id: claimId });
-    if (!claim) {
-        throw new ApiError(404, "Claim not found");
-    }
-
-    const currentStatus = claim.claim_status;
-
-    const allowedNext = ALLOWED_TRANSITIONS[currentStatus] || [];
-    if (!allowedNext.includes(newStatus)) {
-        throw new ApiError(
-            400,
-            `Cannot transition claim from "${currentStatus}" to "${newStatus}". ` +
-            `Allowed transitions: ${allowedNext.join(", ") || "none"}`
-        );
-    }
-
-    if (
-        (newStatus === CLAIM_STATUS.REJECTED || newStatus === CLAIM_STATUS.ESCALATED)
-        && !reason
-    ) {
-        throw new ApiError(400, `A reason is required when setting status to "${newStatus}"`);
-    }
+    if (!claim) throw new ApiError(404, "Claim not found");
 
     claim.claim_status = newStatus;
     claim.status_reason = reason || null;
@@ -383,6 +170,5 @@ export const updateClaimStatus = async (claimId, payload, actorId) => {
     claim.updated_at = new Date();
 
     await claim.save();
-
     return claim.toObject();
 };

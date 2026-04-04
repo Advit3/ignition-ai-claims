@@ -28,8 +28,9 @@ app.use(helmet());
 
 // CORS — allow React frontend to communicate
 app.use(cors({
-  origin:      process.env.CORS_ORIGIN || "*",
-  credentials: true,
+    origin: true, // Allows any origin that sends the request
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
 }));
 
 // Parse JSON payloads (10kb limit to prevent DoS)
@@ -77,6 +78,10 @@ app.use("/api/v1/auth", authLimiter, authRouter);
 import claimRoutes from "./routes/claim.routes.js";
 app.use("/api/v1/claims", verifyJWT, claimRoutes);
 
+// Upload routes (secure document pushing restricted to authenticated users)
+import uploadRoutes from "./routes/upload.routes.js";
+app.use("/api/v1/upload", verifyJWT, uploadRoutes);
+
 // Notification routes (protected by JWT inside the router)
 import notificationRoutes from "./routes/notification.routes.js";
 app.use("/api/v1/notifications", notificationRoutes);
@@ -84,6 +89,11 @@ app.use("/api/v1/notifications", notificationRoutes);
 // Analytics routes — admins only (verifyJWT + isAdmin applied HERE)
 import analyticsRoutes from "./routes/analytics.routes.js";
 app.use("/api/v1/admin/analytics", verifyJWT, isAdmin, analyticsRoutes);
+
+// Temporary Diagnostic Route
+app.get("/api/v1/health", (req, res) => {
+  return res.status(200).json({ status: "alive", message: "API is connected!" });
+});
 
 // ==========================================
 // 5. 404 HANDLER

@@ -12,6 +12,10 @@ import {
  * POST /api/v1/claims/submit
  */
 export const submitClaimController = asyncHandler(async (req, res) => {
+    console.log("[TRACE] 1. Received Request Body:", req.body);
+    if (req.file) console.log(`[TRACE] 2. File identified: ${req.file.originalname}`);
+    else console.log(`[TRACE] 2. File uploaded via Cloudinary: ${req.body.document_url}`);
+
     const { claim_type, claim_amount, document_url, description } = req.body;
 
     if (!claim_type || !claim_amount || !document_url) {

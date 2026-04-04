@@ -60,7 +60,7 @@ const claimSchema = new mongoose.Schema({
         type: String,
         required: true,
         lowercase: true,
-        enum: ['health', 'car', 'ecommerce'],
+        enum: ['health', 'auto', 'gadget'],
     },
 
     /** Free-text description from the policyholder */
@@ -108,6 +108,28 @@ const claimSchema = new mongoose.Schema({
     doc_match: {
         type: Number,
         default: 0,
+    },
+
+    /** Detected Type via OCR */
+    detected_type: {
+        type: String,
+    },
+
+    /** Mismatched or flagging reasons from Engine */
+    reasons: {
+        type: [String],
+        default: [],
+    },
+
+    /** Risk Level */
+    risk_level: {
+        type: String,
+        enum: ['low', 'medium', 'high', 'Low', 'Medium', 'High'],
+    },
+
+    payment_status: {
+        type: String,
+        enum: ['pending', 'initiated', 'processing', 'completed'],
     },
 
     // ─── LIFECYCLE / ASSIGNMENT FIELDS ──────────────────────────────────

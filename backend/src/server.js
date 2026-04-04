@@ -65,6 +65,9 @@ connectDB()
             logger.info(`🚀 Server is running on port: ${port}`);
             logger.info(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
         });
+        
+        // Increase global sever timeout to 60 seconds so long OCR processes don't cut off
+        server.timeout = 60000;
 
         server.on('error', (error) => {
             logger.error('Express server error', { error: error.message });
